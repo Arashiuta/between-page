@@ -1,0 +1,208 @@
+<script setup lang="ts">
+import { ref, computed } from "vue";
+import { useRouter } from "vue-router";
+import {
+  Plus,
+  ArrowUpRight,
+  BookOpen,
+  Feather,
+  Sparkles,
+  ArrowRight,
+  Archive,
+  MoreHorizontal,
+} from "lucide-vue-next";
+import { useWorkspace } from "../stores/workspace";
+import { textToDocument } from "../../shared/document";
+const store = useWorkspace(),
+  router = useRouter(),
+  archived = ref(false),
+  search = ref("");
+defineEmits(["new-story"]);
+const filtered = computed(() =>
+  store.projects.filter(
+    (p) => p.archived === archived.value && p.title.includes(search.value),
+  ),
+);
+const date = (value: string) =>
+  new Date(value).toLocaleDateString("zh-CN", {
+    month: "long",
+    day: "numeric",
+  });
+async function sample() {
+  await store.safe(async () => {
+    const card = await store.saveCard({
+      projectId: null,
+      kind: "character",
+      name: "林屿 · 示例 OC",
+      description:
+        "二十四岁，经营一家旧书店。黑色短发，习惯把袖口挽起。说话慢，记得每位常客爱读的书。面对自己的过去却总是绕开话题。外表平静，实际很在意别人是否会离开。",
+      constraints: "不会轻易许诺；不会因为陌生人一句话就倾诉自己的全部经历。",
+      referenceIds: [],
+    });
+    const p = await store.createProject({
+      title: "雾里的第十三封信",
+      premise:
+        "海边小城里，一家只在夜晚营业的旧书店，每逢起雾就会收到一封没有署名的信。店主林屿发现，信里写的竟是他尚未经历的事情。想写缓慢、温柔，带一点悬疑的故事。",
+      mode: "explore",
+      genre: "日常 · 微悬疑",
+      cardIds: [card.id],
+    });
+    await store.openProject(p.id);
+    store.editProject({
+      world:
+        "一座经常起雾的海边小城。旧书店名为「第十三页」，晚上八点开门，凌晨两点打烊。这里偶尔发生难以解释的小事，但生活仍按自己的节奏继续。",
+      style:
+        "第三人称有限视角，跟随林屿。对白克制，以动作与细节表达情绪。让悬疑自然地藏在日常里。",
+      outline:
+        "一、陌生的来信：林屿收到一封写着明日天气的信。\n二、迟到的客人：信里提到的人走进书店。\n三、没有寄出的回信：林屿决定试着给未知的人回复。\n\n后续保持开放，探索来信与林屿过去的关系。",
+    });
+    store.editChapter({
+      title: "第一章 · 雾把门推开",
+      plan: "建立书店与林屿的日常。让第一封信出现，以一个细小但不寻常的细节结束。",
+      document: textToDocument(
+        "海雾抵达书店的时候，墙上的钟刚好走过八点。\n\n林屿把门口的木牌翻过来，露出「营业中」三个字。木牌底下还挂着一串旧风铃，今天没有风，它却轻轻响了一声。\n\n他停了停，低头看向门缝。\n\n一只米白色的信封躺在那里，边角干燥，仿佛从来没有穿过这条湿漉漉的街。信封上没有地址，只有一行细小的字。\n\n——明天，请晚十分钟关门。",
+      ),
+    });
+    await store.flush();
+    await router.push("/story/" + p.id);
+  });
+}
+async function toggleArchive(id: string, value: boolean) {
+  await store.safe(async () => {
+    await store.api("project:update", { id, archived: value });
+    await store.bootstrap();
+    store.notify(value ? "故事已收进归档，可随时恢复。" : "故事已回到书架。");
+  });
+}
+</script>
+<template>
+  <main class="page library-page">
+    <div class="page-eyebrow">YOUR STORIES, YOUR POSSIBILITIES</div>
+    <div class="page-heading">
+      <div>
+        <h1>让故事，慢慢发生<span>。</span></h1>
+        <p>收好每一个灵感，陪你的角色走向未曾抵达的地方。</p>
+      </div>
+      <span class="date-label">{{
+        new Date().toLocaleDateString("zh-CN", {
+          month: "long",
+          day: "numeric",
+          weekday: "long",
+        })
+      }}</span>
+    </div>
+    <section class="welcome-banner">
+      <div>
+        <div class="banner-tag">
+          <Sparkles :size="13" /> 每个角色，都值得拥有自己的故事
+        </div>
+        <h2>带上你的 OC，<br />翻开新的一页。</h2>
+        <p>
+          一个世界，一次相遇，或只是突然冒出的念头。<br />剩下的，我们一起慢慢写。
+        </p>
+        <button class="button primary" @click="$emit('new-story')">
+          开启一个故事 <ArrowUpRight :size="16" />
+        </button>
+      </div>
+      <div class="book-illustration" aria-hidden="true">
+        <div class="book-shadow"></div>
+        <div class="decor-star star-one">✦</div>
+        <div class="decor-star star-two">✧</div>
+        <div class="book back-book"></div>
+        <div class="book front-book">
+          <div class="book-spine"></div>
+          <div class="book-cover">
+            <span>A LITTLE WORLD<br />OF YOUR OWN</span>
+            <div class="cover-frame">
+              <Feather :size="42" :stroke-width="1" />
+            </div>
+            <strong>故事尚未结束</strong><small>THE NEXT PAGE IS YOURS</small>
+          </div>
+        </div>
+        <span class="illustration-caption"
+          >写给你，也写给你心里的那个世界。</span
+        >
+      </div>
+    </section>
+    <div class="section-toolbar">
+      <div class="section-title">
+        <h2>我的故事书架</h2>
+        <span class="count-tag"
+          >{{ store.projects.filter((p) => !p.archived).length }} 个故事</span
+        >
+      </div>
+      <div class="toolbar-actions">
+        <button
+          :class="['text-button', { selected: archived }]"
+          @click="archived = !archived"
+        >
+          <Archive :size="15" />{{ archived ? "返回书架" : "归档" }}</button
+        ><input
+          v-if="store.projects.length > 3"
+          v-model="search"
+          class="search-input"
+          placeholder="找一本故事……"
+        />
+      </div>
+    </div>
+    <div v-if="filtered.length" class="story-grid">
+      <article
+        v-for="p in filtered"
+        :key="p.id"
+        class="story-card"
+        @click="router.push('/story/' + p.id)"
+      >
+        <div :class="['story-cover', p.color]">
+          <span class="cover-mode"
+            ><Feather v-if="p.mode === 'explore'" :size="12" /><BookOpen
+              v-else
+              :size="12"
+            />{{ p.mode === "explore" ? "自由探索" : "长篇创作" }}</span
+          >
+          <div class="cover-lines"></div>
+          <BookOpen class="cover-icon" :size="44" :stroke-width="1" /><span
+            class="cover-genre"
+            >{{ p.genre }}</span
+          >
+        </div>
+        <div class="story-card-body">
+          <div class="story-card-title">
+            <h3>{{ p.title }}</h3>
+            <ArrowUpRight :size="17" />
+          </div>
+          <p>{{ p.premise || "故事已经准备好，等待你的第一笔。" }}</p>
+          <div class="story-card-footer">
+            <span>{{ date(p.updatedAt) }} · 最近编辑</span
+            ><button
+              class="icon-button"
+              :aria-label="p.archived ? '恢复故事' : '归档故事'"
+              @click.stop="toggleArchive(p.id, !p.archived)"
+            >
+              <Archive :size="14" />
+            </button>
+          </div>
+        </div>
+      </article>
+      <button class="new-story-card" @click="$emit('new-story')">
+        <span><Plus :size="23" /></span><strong>还有一个故事，等你开始</strong>
+        <p>让灵感有个落脚的地方</p>
+      </button>
+    </div>
+    <div v-else-if="!archived && !search" class="shelf-empty">
+      <div class="empty-icon"><BookOpen :size="27" :stroke-width="1.4" /></div>
+      <h3>这里会放满你的故事</h3>
+      <p>先从一个念头开始，不必一开始就想好结局。</p>
+      <button class="text-button" @click="sample">
+        先翻翻示例故事 <ArrowRight :size="15" />
+      </button>
+    </div>
+    <div v-else class="shelf-empty">
+      <Archive :size="28" />
+      <p>{{ archived ? "归档里还没有故事。" : "没有找到这本故事。" }}</p>
+    </div>
+    <footer class="page-footer">
+      <span>创作没有标准答案，下一页由你决定。</span
+      ><span><span class="tiny-dot"></span> 资料保存在本机</span>
+    </footer>
+  </main>
+</template>

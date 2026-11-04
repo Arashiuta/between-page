@@ -1,0 +1,63 @@
+{
+  "name": "between-pages",
+  "version": "0.1.0",
+  "description": "页间 · OC 故事创作工作台",
+  "main": "./out/main/index.js",
+  "author": "Between Pages",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "preview": "electron-vite preview",
+    "pack:win": "npm run build && electron-builder --win --dir",
+    "dist:win": "npm run build && electron-builder --win zip",
+    "format": "prettier --write src tests *.ts *.json README.md"
+  },
+  "dependencies": {
+    "@tiptap/starter-kit": "^3.7.2",
+    "@tiptap/vue-3": "^3.7.2",
+    "lucide-vue-next": "^0.468.0",
+    "naive-ui": "^2.43.1",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.22",
+    "vue-router": "^4.6.3",
+    "yazl": "^3.3.1",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/yazl": "^3.3.1",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "electron": "^45.2.1",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^4.0.1",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.0",
+    "vitest": "^5.1.0",
+    "vue-tsc": "^3.1.4"
+  },
+  "build": {
+    "appId": "com.betweenpages.storybook",
+    "productName": "页间",
+    "electronDist": "node_modules/electron/dist",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "zip"
+      ],
+      "artifactName": "BetweenPages-${version}-win-${arch}.zip",
+      "signAndEditExecutable": false
+    }
+  }
+}

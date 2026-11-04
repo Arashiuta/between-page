@@ -1,0 +1,117 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import { useWorkspace } from "../src/renderer/stores/workspace";
+import { textToDocument } from "../src/shared/document";
+import { reactive } from "vue";
+const invoke = vi.fn();
+beforeEach(() => {
+  setActivePinia(createPinia());
+  vi.stubGlobal("window", {
+    storybook: {
+      invoke,
+      onProgress: () => () => {},
+      onClosing: () => () => {},
+    },
+  });
+});
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+function setup() {
+  const store = useWorkspace();
+  store.detail = {
+    project: {
+      id: "story",
+      title: "测试",
+      premise: "",
+      mode: "explore",
+      genre: "",
+      world: "",
+      style: "",
+      outline: "",
+      color: "sage",
+      createdAt: "",
+      updatedAt: "",
+      archived: false,
+    },
+    chapters: [
+      {
+        id: "chapter",
+        projectId: "story",
+        title: "第一章",
+        position: 1,
+        plan: "",
+        document: textToDocument(""),
+        content: "",
+        acceptedRevisionId: null,
+        dirty: true,
+        needsReview: false,
+        updatedAt: "",
+      },
+    ],
+    cards: [],
+    memories: [],
+    images: [],
+  };
+  store.chapterId = "chapter";
+  return store;
+}
+describe("自动保存队列", () => {
+  it("传给桌面桥的是可克隆的普通数据，包含嵌套资料与设置", async () => {
+    const store = setup();
+    invoke.mockImplementation((_action, payload) =>
+      Promise.resolve(structuredClone(payload)),
+    );
+    const form = reactive({
+      text: { key: "local-test" },
+      referenceIds: ["one"],
+      document: textToDocument("正文"),
+    });
+    await expect(store.api("test", form)).resolves.toEqual(form);
+  });
+  it("初次空队列保存后，后续编辑仍然正常保存", async () => {
+    const store = setup();
+    await store.flush();
+    invoke.mockResolvedValue({ dirty: true, updatedAt: "saved" });
+    store.editChapter({ document: textToDocument("不会丢失的文字") });
+    await store.flush();
+    expect(invoke).toHaveBeenCalledWith(
+      "chapter:update",
+      expect.objectContaining({
+        id: "chapter",
+        document: textToDocument("不会丢失的文字"),
+      }),
+    );
+  });
+  it("请求进行中继续编辑，新内容会排队保存且不会被旧响应覆盖", async () => {
+    const store = setup();
+    let release: (value: unknown) => void = () => {};
+    invoke
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (release = resolve)),
+      )
+      .mockResolvedValue({ dirty: true, updatedAt: "second" });
+    store.editChapter({ document: textToDocument("第一份") });
+    const flushing = store.flush();
+    store.editChapter({ document: textToDocument("第二份") });
+    release({ dirty: true, updatedAt: "first" });
+    await flushing;
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(store.chapter?.content).toBe("第二份");
+    expect(invoke.mock.calls[1][1].document).toEqual(textToDocument("第二份"));
+  });
+  it("磁盘保存失败时保留待保存内容，允许重试", async () => {
+    const store = setup();
+    invoke
+      .mockRejectedValueOnce(new Error("磁盘暂不可写"))
+      .mockResolvedValue({ dirty: true, updatedAt: "saved" });
+    store.editChapter({ document: textToDocument("重试后应保留") });
+    await expect(store.flush()).rejects.toThrow("不可写");
+    expect(store.saveFailed).toBe(true);
+    await store.flush();
+    expect(store.saveFailed).toBe(false);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});
