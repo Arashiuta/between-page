@@ -11,7 +11,13 @@ vi.mock("electron", () => ({
   safeStorage: { decryptString },
   dialog: {},
 }));
-import { makeBackup, readKey, saveKey, settings } from "../src/main/storage";
+import {
+  makeBackup,
+  readKey,
+  saveKey,
+  saveSettings,
+  settings,
+} from "../src/main/storage";
 const directories: string[] = [];
 afterEach(async () => {
   vi.resetAllMocks();
@@ -25,6 +31,46 @@ afterEach(async () => {
   }
 });
 describe("文件保存与恢复", () => {
+  it("模型配置保存当前输入的 Key，重新打开后可回填，删空即清除", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "storybook-test-"));
+    directories.push(dir);
+    const filename = join(dir, "storybook.sqlite");
+    let repo = new StoryRepository(filename);
+    try {
+      const form = settings(repo, dir);
+      form.text = {
+        ...form.text,
+        baseUrl: "http://localhost:18414/v1",
+        key: "qa-current-text",
+        model: "writer-b",
+        selectedModels: ["writer-a", "writer-b"],
+      };
+      form.image = { ...form.image, baseUrl: "", key: "qa-current-image" };
+      saveSettings(repo, dir, form);
+      repo.close();
+      repo = new StoryRepository(filename);
+      const saved = settings(repo, dir);
+      expect(saved.text.key).toBe("qa-current-text");
+      expect(saved.image.key).toBe("qa-current-image");
+      expect(saved.text.model).toBe("writer-b");
+      expect(saved.text.selectedModels).toEqual(["writer-a", "writer-b"]);
+      expect(saved.image.baseUrl).toBe("");
+      const cleared = saveSettings(repo, dir, {
+        ...saved,
+        text: { ...saved.text, key: "" },
+        image: { ...saved.image, key: "", baseUrl: "https://" },
+      });
+      expect(cleared.text.key).toBe("");
+      expect(cleared.text.hasKey).toBe(false);
+      expect(cleared.image.key).toBe("");
+      expect(cleared.image.hasKey).toBe(false);
+      expect(repo.getSetting("text.key", "missing")).toBe("");
+      expect(cleared.image.baseUrl).toBe("https://");
+      expect(decryptString).not.toHaveBeenCalled();
+    } finally {
+      repo.close();
+    }
+  });
   it("新 Key 明文保存并持久化，不调用系统加密服务", () => {
     const repo = new StoryRepository(":memory:");
     try {

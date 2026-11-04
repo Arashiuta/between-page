@@ -11,6 +11,7 @@ import { mkdir, readdir, cp, rm, writeFile } from "node:fs/promises";
 import { join, dirname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ZipFile } from "yazl";
+import { z } from "zod";
 import type { StoryRepository } from "./database";
 import type { Settings, ProviderConfig } from "../shared/types";
 import { modelSelection } from "../shared/models";
@@ -70,18 +71,22 @@ export function saveKey(
   })();
 }
 export function settings(repo: StoryRepository, dataDir: string): Settings {
-  const provider = (kind: "text" | "image"): ProviderConfig => ({
-    baseUrl: repo.getSetting(`${kind}.url`, "https://api.openai.com/v1"),
-    ...modelSelection(
-      repo.getSetting(`${kind}.model`, kind === "image" ? "gpt-image-2" : ""),
-      repo.getSetting<string[] | undefined>(
-        `${kind}.selectedModels`,
-        undefined,
+  const provider = (kind: "text" | "image"): ProviderConfig => {
+    const key = readKey(repo, kind);
+    return {
+      baseUrl: repo.getSetting(`${kind}.url`, "https://api.openai.com/v1"),
+      ...modelSelection(
+        repo.getSetting(`${kind}.model`, kind === "image" ? "gpt-image-2" : ""),
+        repo.getSetting<string[] | undefined>(
+          `${kind}.selectedModels`,
+          undefined,
+        ),
+        repo.getSetting(`${kind}.availableModels`, []),
       ),
-      repo.getSetting(`${kind}.availableModels`, []),
-    ),
-    hasKey: !!readKey(repo, kind),
-  });
+      key,
+      hasKey: !!key.trim(),
+    };
+  };
   return {
     text: provider("text"),
     image: provider("image"),
@@ -90,6 +95,47 @@ export function settings(repo: StoryRepository, dataDir: string): Settings {
     dataDir,
     version: app.getVersion(),
   };
+}
+export function saveSettings(
+  repo: StoryRepository,
+  dataDir: string,
+  input: unknown,
+): Settings {
+  const modelName = z.string().trim().min(1).max(500);
+  const provider = z.object({
+    // Keep unfinished input locally; validate the URL when making a request.
+    baseUrl: z.string().max(2000),
+    key: z.string().max(4000),
+    model: z.string().trim().max(500),
+    selectedModels: z.array(modelName).max(200),
+    availableModels: z.array(modelName).max(3200),
+  });
+  const value = z
+    .object({
+      text: provider,
+      image: provider,
+      imageSize: z.string().max(500),
+      imageQuality: z.enum(["auto", "low", "medium", "high"]),
+    })
+    .parse(input);
+  repo.db.transaction(() => {
+    for (const kind of ["text", "image"] as const) {
+      const config = value[kind];
+      const selection = modelSelection(
+        config.model,
+        config.selectedModels,
+        config.availableModels,
+      );
+      repo.setSetting(`${kind}.url`, config.baseUrl);
+      repo.setSetting(`${kind}.model`, selection.model);
+      repo.setSetting(`${kind}.selectedModels`, selection.selectedModels);
+      repo.setSetting(`${kind}.availableModels`, selection.availableModels);
+      saveKey(repo, kind, config.key);
+    }
+    repo.setSetting("image.size", value.imageSize);
+    repo.setSetting("image.quality", value.imageQuality);
+  })();
+  return settings(repo, dataDir);
 }
 export function imageMime(bytes: Buffer): { mime: string; extension: string } {
   if (

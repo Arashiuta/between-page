@@ -6,7 +6,6 @@ import { readFile, writeFile, copyFile, stat } from "node:fs/promises";
 import { z } from "zod";
 import { StoryRepository } from "./database";
 import { chat, generateImage, listModels, type Connection } from "./provider";
-import { modelSelection } from "../shared/models";
 import { buildTask, parseMemories } from "./prompts";
 import {
   importTextDocument,
@@ -21,7 +20,7 @@ import {
   initializeDirectories,
   settings,
   readKey,
-  saveKey,
+  saveSettings,
   imageMime,
   makeBackup,
   migrateData,
@@ -363,62 +362,16 @@ const handlers: Record<
     const v = z.object({ id: idSchema, active: z.boolean() }).parse(p);
     return repo.setMemoryActive(v.id, v.active);
   },
-  "settings:save": (p) => {
-    const provider = z.object({
-      baseUrl: z.string().trim().url().max(2000),
-      model: shortText.trim(),
-      selectedModels: z.array(shortText.trim().min(1)).max(200),
-      availableModels: z.array(shortText.trim().min(1)).max(3200),
-      key: z.string().max(4000).optional(),
-      clearKey: z.boolean().optional(),
-    });
-    const value = z
-      .object({
-        text: provider,
-        image: provider,
-        imageSize: shortText,
-        imageQuality: z.enum(["auto", "low", "medium", "high"]),
-      })
-      .parse(p);
-    repo.db.transaction(() => {
-      for (const kind of ["text", "image"] as const) {
-        const c = value[kind];
-        const url = new URL(c.baseUrl);
-        if (
-          !["http:", "https:"].includes(url.protocol) ||
-          url.username ||
-          url.password
-        )
-          throw new Error("请输入有效的 HTTP 或 HTTPS 接口地址。");
-        repo.setSetting(`${kind}.url`, c.baseUrl);
-        const selection = modelSelection(
-          c.model,
-          c.selectedModels,
-          c.availableModels,
-        );
-        repo.setSetting(`${kind}.model`, selection.model);
-        repo.setSetting(`${kind}.selectedModels`, selection.selectedModels);
-        repo.setSetting(`${kind}.availableModels`, selection.availableModels);
-        if (c.clearKey) saveKey(repo, kind, "");
-        else if (c.key?.trim()) saveKey(repo, kind, c.key.trim());
-      }
-      repo.setSetting("image.size", value.imageSize);
-      repo.setSetting("image.quality", value.imageQuality);
-    })();
-    return settings(repo, dataDir);
-  },
+  "settings:save": (p) => saveSettings(repo, dataDir, p),
   "settings:models": async (p) => {
     const value = z
       .object({
         kind: z.enum(["text", "image"]),
         baseUrl: z.string().trim().url().max(2000),
-        key: z.string().max(4000).optional(),
-        clearKey: z.boolean().optional(),
+        key: z.string().max(4000),
       })
       .parse(p);
-    const key = value.clearKey
-      ? ""
-      : value.key?.trim() || readKey(repo, value.kind);
+    const key = value.key.trim();
     try {
       return await listModels({ baseUrl: value.baseUrl, key });
     } catch (error) {
@@ -442,9 +395,7 @@ const handlers: Record<
   },
   "settings:test": async (p) => {
     if (z.enum(["text", "image"]).parse(p) === "image")
-      throw new Error(
-        "生图接口通常没有通用的免费测试。请保存后，在插画页手动生成一张图片验证。",
-      );
+      throw new Error("请在插画页手动生成一张图片，验证生图模型的实际效果。");
     const output = await chat(
       connection("text"),
       [{ role: "user", content: "请只回复：连接成功" }],

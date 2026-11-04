@@ -16,7 +16,6 @@ import { modelSelection } from "../../shared/models";
 interface Draft {
   baseUrl: string;
   key: string;
-  clearKey: boolean;
   model: string;
   selectedModels: string[];
   availableModels: string[];
@@ -67,9 +66,9 @@ async function fetchModels() {
       kind: props.kind,
       baseUrl: config.value.baseUrl,
       key: config.value.key,
-      clearKey: config.value.clearKey,
     });
     candidates.value = [...new Set([...list, ...checked.value])].sort();
+    syncSelection();
     page.value = 1;
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "获取模型列表失败。";
@@ -86,6 +85,7 @@ function toggle(id: string, value: boolean) {
     checked.value.push(id);
   } else if (!value)
     checked.value = checked.value.filter((item) => item !== id);
+  syncSelection();
 }
 function add() {
   const id = manual.value.trim();
@@ -96,12 +96,11 @@ function add() {
   manual.value = "";
   search.value = id;
 }
-function confirm() {
+function syncSelection() {
   config.value = {
     ...config.value,
     ...modelSelection(config.value.model, checked.value, candidates.value),
   };
-  show.value = false;
 }
 </script>
 <template>
@@ -131,9 +130,7 @@ function confirm() {
     :closable="!loading"
     :close-on-esc="!loading"
   >
-    <p class="model-help">
-      勾选需要使用的模型，确认后点击页面上的「保存设置」。
-    </p>
+    <p class="model-help">勾选或取消勾选后自动保存，可在设置页选择默认模型。</p>
     <div class="model-search">
       <NInput v-model:value="search" placeholder="搜索模型名称" clearable />
       <NButton :loading="loading" @click="fetchModels">刷新列表</NButton>
@@ -151,7 +148,10 @@ function confirm() {
           >全选本页</NButton
         ><NButton
           text
-          @click="checked = []"
+          @click="
+            checked = [];
+            syncSelection();
+          "
           :disabled="loading || !checked.length"
           >清空勾选</NButton
         >
@@ -194,9 +194,8 @@ function confirm() {
     </div>
     <template #footer
       ><div class="modal-footer">
-        <NButton :disabled="loading" @click="show = false">取消</NButton
-        ><NButton type="primary" :disabled="loading" @click="confirm"
-          >确认勾选（{{ checked.length }}）</NButton
+        <NButton type="primary" :disabled="loading" @click="show = false"
+          >完成（已勾选 {{ checked.length }} 个）</NButton
         >
       </div></template
     >

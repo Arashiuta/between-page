@@ -141,6 +141,7 @@ export interface ImageAsset {
 }
 export interface ProviderConfig {
   baseUrl: string;
+  key: string;
   model: string;
   selectedModels: string[];
   availableModels: string[];
@@ -154,6 +155,10 @@ export interface Settings {
   dataDir: string;
   version: string;
 }
+export type SettingsInput = Pick<Settings, "imageSize" | "imageQuality"> & {
+  text: Omit<ProviderConfig, "hasKey">;
+  image: Omit<ProviderConfig, "hasKey">;
+};
 export interface ProjectDetail {
   project: Project;
   chapters: Chapter[];

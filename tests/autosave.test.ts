@@ -3,7 +3,11 @@ import { createPinia, setActivePinia } from "pinia";
 import { useWorkspace } from "../src/renderer/stores/workspace";
 import { textToDocument } from "../src/shared/document";
 import { reactive } from "vue";
-import type { ProgressEvent } from "../src/shared/types";
+import type {
+  ProgressEvent,
+  Settings,
+  SettingsInput,
+} from "../src/shared/types";
 const invoke = vi.fn();
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -60,6 +64,93 @@ function setup() {
   return store;
 }
 describe("自动保存队列", () => {
+  function settingsForm(): SettingsInput {
+    const provider = {
+      baseUrl: "http://localhost/v1",
+      key: "qa-local-key",
+      model: "model-a",
+      selectedModels: ["model-a", "model-b"],
+      availableModels: ["model-a", "model-b"],
+    };
+    return {
+      text: { ...provider },
+      image: { ...provider },
+      imageSize: "1024x1024",
+      imageQuality: "auto",
+    };
+  }
+  function savedSettings(input: SettingsInput): Settings {
+    return {
+      ...structuredClone(input),
+      text: { ...input.text, hasKey: !!input.text.key },
+      image: { ...input.image, hasKey: !!input.image.key },
+      dataDir: "test",
+      version: "test",
+    };
+  }
+  it("设置连续输入后自动合并保存，并保留当前 Key 与模型", async () => {
+    vi.useFakeTimers();
+    const store = setup(),
+      form = settingsForm();
+    store.settings = savedSettings(form);
+    invoke.mockImplementation((_action, payload) =>
+      Promise.resolve(savedSettings(payload)),
+    );
+    store.editSettings(form);
+    form.text.key = "qa-replaced-key";
+    form.text.model = "model-b";
+    store.editSettings(form);
+    expect(invoke).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(650);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke.mock.calls[0][0]).toBe("settings:save");
+    expect(invoke.mock.calls[0][1].text.key).toBe("qa-replaced-key");
+    expect(store.settings?.text.model).toBe("model-b");
+    expect(store.settings?.text.key).toBe("qa-replaced-key");
+  });
+  it("保存中继续改设置时保留新输入，立即离开可强制完成保存", async () => {
+    const store = setup(),
+      form = settingsForm();
+    store.settings = savedSettings(form);
+    let release: (value: unknown) => void = () => {};
+    invoke
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (release = resolve)),
+      )
+      .mockImplementation((_action, payload) =>
+        Promise.resolve(savedSettings(payload)),
+      );
+    store.editSettings(form);
+    const flushing = store.flush();
+    form.text.key = "";
+    form.text.model = "model-b";
+    store.editSettings(form);
+    form.text.key = "not-yet-enqueued";
+    release(savedSettings(settingsForm()));
+    await flushing;
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[1][1].text.key).toBe("");
+    expect(store.settings?.text.key).toBe("");
+    expect(store.settings?.text.model).toBe("model-b");
+    expect(store.settings?.text.hasKey).toBe(false);
+  });
+  it("设置保存失败后保留最新值，重试仍保存当前输入", async () => {
+    const store = setup(),
+      form = settingsForm();
+    store.settings = savedSettings(form);
+    invoke
+      .mockRejectedValueOnce(new Error("磁盘暂不可写"))
+      .mockImplementation((_action, payload) =>
+        Promise.resolve(savedSettings(payload)),
+      );
+    store.editSettings(form);
+    await expect(store.flush()).rejects.toThrow("不可写");
+    form.text.key = "qa-retry-key";
+    store.editSettings(form);
+    await store.flush();
+    expect(store.settings?.text.key).toBe("qa-retry-key");
+    expect(store.saveFailed).toBe(false);
+  });
   it("生成结束后到达的进度事件不会重复追加正文", async () => {
     const store = setup();
     let progress: (event: ProgressEvent) => void = () => {};

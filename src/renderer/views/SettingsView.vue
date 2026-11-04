@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { storeToRefs } from "pinia";
-import { NInput, NButton, NSelect, NCheckbox, NPopconfirm } from "naive-ui";
+import { NInput, NButton, NSelect, NPopconfirm } from "naive-ui";
 import {
-  Settings,
-  Check,
   Plug,
   Image,
   FolderOpen,
@@ -14,55 +12,39 @@ import {
   HardDrive,
 } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
-import type { Settings as SettingsType } from "../../shared/types";
+import type { SettingsInput } from "../../shared/types";
 import ProviderModels from "../components/ProviderModels.vue";
 const store = useWorkspace(),
-  saving = ref(false),
   testing = ref(false),
   backupBusy = ref(false),
   moving = ref(false);
 const { settings: currentSettings } = storeToRefs(store);
-const form = ref({
+const form = ref<SettingsInput>({
   text: {
     baseUrl: store.settings!.text.baseUrl,
     model: store.settings!.text.model,
     selectedModels: [...store.settings!.text.selectedModels],
     availableModels: [...store.settings!.text.availableModels],
-    key: "",
-    clearKey: false,
+    key: store.settings!.text.key,
   },
   image: {
     baseUrl: store.settings!.image.baseUrl,
     model: store.settings!.image.model,
     selectedModels: [...store.settings!.image.selectedModels],
     availableModels: [...store.settings!.image.availableModels],
-    key: "",
-    clearKey: false,
+    key: store.settings!.image.key,
   },
   imageSize: store.settings!.imageSize,
   imageQuality: store.settings!.imageQuality,
 });
-async function save() {
-  saving.value = true;
-  const result = await store.safe(async () => {
-    const saved = await store.api<SettingsType>("settings:save", form.value);
-    await store.bootstrap();
-    Object.assign(form.value.text, saved.text);
-    Object.assign(form.value.image, saved.image);
-    form.value.text.key = "";
-    form.value.image.key = "";
-    form.value.text.clearKey = false;
-    form.value.image.clearKey = false;
-    store.notify("接口配置已保存。");
-    return true;
-  });
-  saving.value = false;
-  return result;
-}
+watch(form, (value) => store.editSettings(value), {
+  deep: true,
+  flush: "sync",
+});
 async function test() {
   testing.value = true;
   await store.safe(async () => {
-    if (!(await save())) return;
+    await store.flush();
     const result = await store.api<string>("settings:test", "text");
     store.notify(result);
   });
@@ -96,9 +78,7 @@ function openFolder() {
       <div>
         <h1>设置与模型</h1>
       </div>
-      <NButton type="primary" :loading="saving" @click="save"
-        ><template #icon><Check :size="16" /></template>保存设置</NButton
-      >
+      <span class="muted">更改自动保存</span>
     </div>
     <div class="settings-columns">
       <section class="settings-card">
@@ -115,6 +95,7 @@ function openFolder() {
         <label class="field-label">接口地址</label
         ><NInput
           v-model:value="form.text.baseUrl"
+          :maxlength="2000"
           placeholder="https://你的服务地址/v1"
         />
         <p class="field-help">支持基础地址或完整的 chat/completions 地址。</p>
@@ -123,23 +104,15 @@ function openFolder() {
           v-model:value="form.text.key"
           type="password"
           show-password-on="click"
-          :placeholder="
-            currentSettings?.text.hasKey
-              ? '已保存；留空保留原 Key'
-              : '填写你的文字模型 Key'
-          "
+          placeholder="填写你的文字模型 Key"
+          :maxlength="4000"
           autocomplete="off"
-        /><NCheckbox
-          v-if="currentSettings?.text.hasKey"
-          v-model:checked="form.text.clearKey"
-          class="key-checkbox"
-          >清除已保存的 Key</NCheckbox
-        >
+        />
         <ProviderModels v-model="form.text" kind="text" />
         <div class="settings-card-footer">
           <span>兼容聊天接口 · 支持流式输出</span
           ><NButton size="small" :loading="testing" @click="test"
-            >保存并测试连接</NButton
+            >测试模型连通性</NButton
           >
         </div>
       </section>
@@ -157,6 +130,7 @@ function openFolder() {
         <label class="field-label">生图接口地址</label
         ><NInput
           v-model:value="form.image.baseUrl"
+          :maxlength="2000"
           placeholder="https://你的生图服务地址/v1"
         />
         <p class="field-help">
@@ -167,18 +141,10 @@ function openFolder() {
           v-model:value="form.image.key"
           type="password"
           show-password-on="click"
-          :placeholder="
-            currentSettings?.image.hasKey
-              ? '已保存；留空保留原 Key'
-              : '填写你的生图服务 Key'
-          "
+          placeholder="填写你的生图服务 Key"
+          :maxlength="4000"
           autocomplete="off"
-        /><NCheckbox
-          v-if="currentSettings?.image.hasKey"
-          v-model:checked="form.image.clearKey"
-          class="key-checkbox"
-          >清除已保存的 Key</NCheckbox
-        >
+        />
         <ProviderModels v-model="form.image" kind="image" />
         <div class="form-two-columns">
           <div>

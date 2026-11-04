@@ -6,6 +6,7 @@ import type {
   Project,
   Chapter,
   Settings,
+  SettingsInput,
   Card,
   ImageAsset,
   TaskKind,
@@ -128,6 +129,9 @@ export const useWorkspace = defineStore("workspace", () => {
                 chapter.updatedAt = (result as Chapter).updatedAt;
               }
             }
+            if (job.action === "settings:save" && !pending.has(key)) {
+              settings.value = result as Settings;
+            }
           } catch (error) {
             const newer = pending.get(key);
             pending.set(key, {
@@ -153,6 +157,17 @@ export const useWorkspace = defineStore("workspace", () => {
       ...patch,
       id: detail.value.project.id,
     });
+  }
+  function editSettings(value: SettingsInput) {
+    if (!settings.value) return;
+    const snapshot: SettingsInput = JSON.parse(JSON.stringify(value));
+    settings.value = {
+      ...settings.value,
+      ...snapshot,
+      text: { ...snapshot.text, hasKey: !!snapshot.text.key.trim() },
+      image: { ...snapshot.image, hasKey: !!snapshot.image.key.trim() },
+    };
+    enqueue("settings", "settings:save", snapshot);
   }
   function editChapter(patch: {
     title?: string;
@@ -268,6 +283,7 @@ export const useWorkspace = defineStore("workspace", () => {
     if (requestId.value) await api("ai:cancel", requestId.value);
   }
   async function setModel(kind: "text" | "image", model: string) {
+    await flush();
     settings.value = await api<Settings>("settings:model", { kind, model });
   }
   async function saveCard(card: CardInput) {
@@ -335,6 +351,7 @@ export const useWorkspace = defineStore("workspace", () => {
     bootstrap,
     flush,
     editProject,
+    editSettings,
     editChapter,
     openProject,
     refreshProject,
