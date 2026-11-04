@@ -11,7 +11,10 @@ import type {
   TaskKind,
   TaskResult,
   DocumentNode,
+  CardInput,
+  RoleSettings,
 } from "../../shared/types";
+import { defaultRoleSettings } from "../../shared/roles";
 import { documentToText } from "../../shared/document";
 
 export const useWorkspace = defineStore("workspace", () => {
@@ -20,6 +23,7 @@ export const useWorkspace = defineStore("workspace", () => {
     cards = ref<Card[]>([]),
     images = ref<ImageAsset[]>([]),
     settings = ref<Settings | null>(null);
+  const roles = ref<RoleSettings>(defaultRoleSettings());
   const detail = ref<ProjectDetail | null>(null),
     chapterId = ref(""),
     saving = ref(false),
@@ -85,6 +89,7 @@ export const useWorkspace = defineStore("workspace", () => {
     cards.value = value.cards;
     images.value = value.images;
     settings.value = value.settings;
+    roles.value = value.roles ?? defaultRoleSettings();
     ready.value = true;
   }
   function enqueue(
@@ -244,6 +249,7 @@ export const useWorkspace = defineStore("workspace", () => {
         instruction: instruction.value,
         selection: selected,
       });
+      requestId.value = "";
       output.value = result.text;
       if (result.notesSaved) {
         await refreshProject();
@@ -252,6 +258,7 @@ export const useWorkspace = defineStore("workspace", () => {
     } catch (error) {
       taskError.value = error instanceof Error ? error.message : String(error);
     } finally {
+      requestId.value = "";
       busy.value = false;
       scratch();
       void safe(flush);
@@ -260,9 +267,10 @@ export const useWorkspace = defineStore("workspace", () => {
   async function stopTask() {
     if (requestId.value) await api("ai:cancel", requestId.value);
   }
-  async function saveCard(
-    card: Omit<Card, "id" | "updatedAt"> & { id?: string },
-  ) {
+  async function setModel(kind: "text" | "image", model: string) {
+    settings.value = await api<Settings>("settings:model", { kind, model });
+  }
+  async function saveCard(card: CardInput) {
     const result = await api<Card>("card:save", card);
     await bootstrap();
     if (detail.value) await refreshProject();
@@ -284,7 +292,7 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   function initializeListeners() {
     window.storybook.onProgress((event) => {
-      if (event.requestId === requestId.value) {
+      if (busy.value && event.requestId === requestId.value) {
         output.value += event.delta;
         scratch();
       }
@@ -304,6 +312,7 @@ export const useWorkspace = defineStore("workspace", () => {
     cards,
     images,
     settings,
+    roles,
     detail,
     chapterId,
     chapter,
@@ -334,6 +343,7 @@ export const useWorkspace = defineStore("workspace", () => {
     adopt,
     runTask,
     stopTask,
+    setModel,
     saveCard,
     createProject,
     imageUrl,

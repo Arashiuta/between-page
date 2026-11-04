@@ -13,11 +13,10 @@ const items = computed(() =>
 </script>
 <template>
   <main class="page">
-    <div class="page-eyebrow">MOMENTS WORTH KEEPING</div>
     <div class="page-heading">
       <div>
-        <h1>把故事里的光，留下。</h1>
-        <p>收藏生成的插画与角色参考图，随时回到那些瞬间。</p>
+        <h1>插画收藏</h1>
+        <p>查看已生成的插画和导入的参考图片。</p>
       </div>
     </div>
     <div class="filter-tabs">
@@ -59,11 +58,7 @@ const items = computed(() =>
     <div v-else class="large-empty">
       <div class="empty-icon"><Images :size="29" /></div>
       <h3>
-        {{
-          filter === "illustration"
-            ? "故事的画面，会在这里相遇"
-            : "还没有参考图片"
-        }}
+        {{ filter === "illustration" ? "暂无插画" : "还没有参考图片" }}
       </h3>
       <p>
         {{

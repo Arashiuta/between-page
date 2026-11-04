@@ -5,6 +5,7 @@ import {
   consumeSSE,
   endpoint,
   generateImage,
+  listModels,
 } from "../src/main/provider";
 const servers: Server[] = [];
 afterEach(async () => {
@@ -38,6 +39,62 @@ describe("兼容接口", () => {
       ),
     ).toBe("https://example.test/v1/images/edits?route=test");
     expect(() => endpoint("file:///secret", "images/generations")).toThrow();
+    expect(endpoint("https://example.test/v1/models", "models")).toBe(
+      "https://example.test/v1/models",
+    );
+  });
+  it("使用 GET 与当前 Key 获取模型，剔除重复和无效项，不依赖已配置的模型名", async () => {
+    let method = "",
+      path = "",
+      authorization = "";
+    const url = await server((req, res) => {
+      method = req.method!;
+      path = req.url!;
+      authorization = req.headers.authorization!;
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          data: [
+            { id: "writer-b" },
+            { id: "image-custom" },
+            { id: "writer-a" },
+            { id: "writer-a" },
+            { id: 1 },
+            { id: "  " },
+            null,
+          ],
+        }),
+      );
+    });
+    expect(
+      await listModels({
+        baseUrl: url + "/chat/completions",
+        key: "qa-model-key",
+      }),
+    ).toEqual(["image-custom", "writer-a", "writer-b"]);
+    expect(method).toBe("GET");
+    expect(path).toBe("/v1/models");
+    expect(authorization).toBe("Bearer qa-model-key");
+  });
+  it("模型列表为空、不兼容或失败时明确报错", async () => {
+    const url = await server((req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      if (req.url?.includes("empty")) res.end('{"data":[]}');
+      else if (req.url?.includes("invalid")) res.end('{"models":[]}');
+      else {
+        res.statusCode = 403;
+        res.end('{"error":{"message":"permission denied"}}');
+      }
+    });
+    await expect(
+      listModels({ baseUrl: url + "/empty", key: "qa" }),
+    ).rejects.toThrow("未返回可用模型");
+    await expect(
+      listModels({ baseUrl: url + "/invalid", key: "qa" }),
+    ).rejects.toThrow("data 数组");
+    await expect(listModels({ baseUrl: url, key: "qa" })).rejects.toThrow(
+      "403",
+    );
   });
   it("跨网络分片正确读取中文、CRLF、多行 SSE 与结束标记", async () => {
     const encoder = new TextEncoder(),

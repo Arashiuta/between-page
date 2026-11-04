@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useWorkspace } from "../src/renderer/stores/workspace";
 import { textToDocument } from "../src/shared/document";
 import { reactive } from "vue";
+import type { ProgressEvent } from "../src/shared/types";
 const invoke = vi.fn();
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -59,6 +60,33 @@ function setup() {
   return store;
 }
 describe("自动保存队列", () => {
+  it("生成结束后到达的进度事件不会重复追加正文", async () => {
+    const store = setup();
+    let progress: (event: ProgressEvent) => void = () => {};
+    window.storybook.onProgress = (callback) => {
+      progress = callback;
+      return () => {};
+    };
+    store.initializeListeners();
+    let finished: (value: unknown) => void = () => {};
+    let activeRequest = "";
+    invoke.mockImplementation((action, payload) => {
+      if (action === "ai:run") {
+        activeRequest = payload.requestId;
+        return new Promise((resolve) => (finished = resolve));
+      }
+      return Promise.resolve();
+    });
+    const running = store.runTask();
+    await vi.waitFor(() => expect(activeRequest).not.toBe(""));
+    progress({ requestId: activeRequest, delta: "本地测试正文" });
+    expect(store.output).toBe("本地测试正文");
+    finished({ text: "本地测试正文" });
+    await running;
+    progress({ requestId: activeRequest, delta: "本地测试正文" });
+    expect(store.output).toBe("本地测试正文");
+    await store.flush();
+  });
   it("传给桌面桥的是可克隆的普通数据，包含嵌套资料与设置", async () => {
     const store = setup();
     invoke.mockImplementation((_action, payload) =>

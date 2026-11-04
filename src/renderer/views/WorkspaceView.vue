@@ -179,7 +179,7 @@ async function viewSource(revisionId: string | null) {
 <template>
   <div v-if="loading" class="startup-error">
     <Feather :size="27" />
-    <p>正在翻开故事……</p>
+    <p>正在加载…</p>
   </div>
   <div v-else-if="store.detail" class="workspace-page">
     <header class="workspace-header">
@@ -379,8 +379,7 @@ async function viewSource(revisionId: string | null) {
         >
           <div class="content-heading">
             <div>
-              <span class="small-label">THE SHAPE OF YOUR STORY</span>
-              <h2>故事可以有方向，也可以有留白。</h2>
+              <h2>故事蓝图</h2>
               <p>这些是可调整的计划，不会自动成为已经发生的事实。</p>
             </div>
           </div>
@@ -438,8 +437,7 @@ async function viewSource(revisionId: string | null) {
         <section v-else-if="tab === 'cards'" class="tab-content">
           <div class="content-heading">
             <div>
-              <span class="small-label">PEOPLE & THEIR LITTLE WORLDS</span>
-              <h2>让角色，成为他们自己。</h2>
+              <h2>世界与人物</h2>
               <p>这里的设定只属于这个故事，可从资料库带入，也可以单独修改。</p>
             </div>
             <button class="button primary small-button" @click="editCard(null)">
@@ -460,7 +458,15 @@ async function viewSource(revisionId: string | null) {
                     : "灵感"
               }}</span>
               <h3>{{ card.name }}</h3>
-              <p>{{ card.description || "还没有描述，慢慢补充也没关系。" }}</p>
+              <p>
+                {{
+                  card.description ||
+                  card.sections.map((section) => section.title).join("、") ||
+                  (card.documents.length
+                    ? `${card.documents.length} 份原始文档`
+                    : "暂无描述")
+                }}
+              </p>
               <div v-if="card.constraints" class="card-constraints">
                 <span>需要坚持的设定</span>{{ card.constraints }}
               </div>
@@ -487,7 +493,7 @@ async function viewSource(revisionId: string | null) {
           </div>
           <div v-else class="inline-empty">
             <Users :size="32" />
-            <p>这个世界，正在等待它的人物。</p>
+            <p>暂无设定，可新建或从资料库导入。</p>
             <button class="text-button" @click="editCard(null)">
               添加第一个角色 <Plus :size="14" />
             </button>
@@ -520,8 +526,7 @@ async function viewSource(revisionId: string | null) {
         <section v-else-if="tab === 'memory'" class="tab-content">
           <div class="content-heading">
             <div>
-              <span class="small-label">THINGS THE STORY REMEMBERS</span>
-              <h2>发生过的事，故事会记得。</h2>
+              <h2>故事记忆</h2>
               <p>
                 采用章节后，在创作搭档中选择「整理正式记忆」。也可以手动记录。
               </p>
@@ -584,7 +589,7 @@ async function viewSource(revisionId: string | null) {
           </div>
           <div v-else class="inline-empty">
             <NotebookPen :size="30" />
-            <p>故事刚开始，还没有需要记住的往事。</p>
+            <p>暂无有效记忆。采用章节后，可使用「整理正式记忆」提取内容。</p>
             <span class="muted small"
               >草稿、未来大纲和未确认的建议不会自动写入记忆。</span
             >

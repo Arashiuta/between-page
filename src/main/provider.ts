@@ -18,7 +18,10 @@ export function endpoint(baseUrl: string, path: string): string {
     throw new Error("接口地址需要是有效的 HTTP 或 HTTPS 地址。");
   url.pathname =
     url.pathname
-      .replace(/\/(chat\/completions|images\/(generations|edits))\/?$/, "")
+      .replace(
+        /\/(models|chat\/completions|images\/(generations|edits))\/?$/,
+        "",
+      )
       .replace(/\/$/, "") +
     "/" +
     path;
@@ -33,6 +36,54 @@ async function errorMessage(response: Response): Promise<string> {
   } catch {
     return `接口返回 ${response.status}，请检查地址、Key、模型名称和服务可用性。`;
   }
+}
+export async function listModels(
+  config: Pick<Connection, "baseUrl" | "key">,
+): Promise<string[]> {
+  if (!config.key.trim()) throw new Error("请先填写 API Key。");
+  const response = await fetch(endpoint(config.baseUrl, "models"), {
+    headers: { Authorization: `Bearer ${config.key}` },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+  let data: { data?: unknown; error?: { message?: string } };
+  try {
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object") throw new Error();
+    data = body;
+  } catch {
+    throw new Error(
+      "接口未返回有效 JSON，请检查模型列表地址，或手动添加模型名称。",
+    );
+  }
+  if (data.error) throw new Error(data.error.message || "获取模型列表失败。");
+  if (!Array.isArray(data.data))
+    throw new Error(
+      "接口未返回兼容的模型列表（data 数组）。可手动添加模型名称。",
+    );
+  const models = [
+    ...new Set(
+      data.data.flatMap((item: unknown) => {
+        if (
+          item &&
+          typeof item === "object" &&
+          "id" in item &&
+          typeof item.id === "string"
+        ) {
+          const id = item.id.trim();
+          return id && id.length <= 500 ? [id] : [];
+        }
+        return [];
+      }),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+  if (!models.length)
+    throw new Error("服务未返回可用模型，可手动添加模型名称。");
+  if (models.length > 3000)
+    throw new Error(
+      "服务返回的模型超过 3000 个，请使用服务商提供的精简列表地址，或手动添加模型。",
+    );
+  return models;
 }
 export async function consumeSSE(
   body: ReadableStream<Uint8Array>,

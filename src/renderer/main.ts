@@ -7,6 +7,7 @@ import WorkspaceView from "./views/WorkspaceView.vue";
 import CardsView from "./views/CardsView.vue";
 import GalleryView from "./views/GalleryView.vue";
 import SettingsView from "./views/SettingsView.vue";
+import RolesView from "./views/RolesView.vue";
 import { useWorkspace } from "./stores/workspace";
 import "./styles.css";
 
@@ -21,6 +22,7 @@ const router = createRouter({
     { path: "/cards", component: CardsView },
     { path: "/gallery", component: GalleryView },
     { path: "/settings", component: SettingsView },
+    { path: "/roles", component: RolesView },
   ],
 });
 router.beforeEach(async (to, from) => {

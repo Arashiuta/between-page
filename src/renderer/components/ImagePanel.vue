@@ -82,14 +82,28 @@ function stale(image: ImageAsset) {
   <section class="image-panel tab-content">
     <div class="content-heading">
       <div>
-        <span class="small-label">PICTURE THE MOMENT</span>
-        <h2>让故事里的瞬间，有了画面。</h2>
-        <p>选一个值得留下的场景，或请创作搭档先构思提示词。</p>
+        <h2>故事插画</h2>
       </div>
       <Images :size="29" :stroke-width="1.2" />
     </div>
     <div class="image-form">
-      <label class="field-label first">这次想画什么</label
+      <label class="field-label first">插画模型</label>
+      <NSelect
+        :value="store.settings?.image.model || null"
+        :options="
+          store.settings?.image.selectedModels.map((id) => ({
+            label: id,
+            value: id,
+          })) || []
+        "
+        placeholder="在设置中勾选模型"
+        :disabled="store.imageBusy"
+        filterable
+        @update:value="
+          (value) => store.safe(() => store.setModel('image', value))
+        "
+      />
+      <label class="field-label">画面描述</label
       ><NInput
         v-model:value="prompt"
         type="textarea"
@@ -195,7 +209,7 @@ function stale(image: ImageAsset) {
     </div>
     <div v-else class="inline-empty">
       <Images :size="25" />
-      <p>还没有插画，先留住故事里的一个瞬间。</p>
+      <p>暂无插画。</p>
     </div>
     <NModal
       :show="!!preview"

@@ -6,10 +6,8 @@ import {
   ArrowUpRight,
   BookOpen,
   Feather,
-  Sparkles,
   ArrowRight,
   Archive,
-  MoreHorizontal,
 } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import { textToDocument } from "../../shared/document";
@@ -77,53 +75,12 @@ async function toggleArchive(id: string, value: boolean) {
 </script>
 <template>
   <main class="page library-page">
-    <div class="page-eyebrow">YOUR STORIES, YOUR POSSIBILITIES</div>
     <div class="page-heading">
-      <div>
-        <h1>让故事，慢慢发生<span>。</span></h1>
-        <p>收好每一个灵感，陪你的角色走向未曾抵达的地方。</p>
-      </div>
-      <span class="date-label">{{
-        new Date().toLocaleDateString("zh-CN", {
-          month: "long",
-          day: "numeric",
-          weekday: "long",
-        })
-      }}</span>
+      <h1>故事书架</h1>
+      <button class="button primary" @click="$emit('new-story')">
+        <Plus :size="16" />新建故事
+      </button>
     </div>
-    <section class="welcome-banner">
-      <div>
-        <div class="banner-tag">
-          <Sparkles :size="13" /> 每个角色，都值得拥有自己的故事
-        </div>
-        <h2>带上你的 OC，<br />翻开新的一页。</h2>
-        <p>
-          一个世界，一次相遇，或只是突然冒出的念头。<br />剩下的，我们一起慢慢写。
-        </p>
-        <button class="button primary" @click="$emit('new-story')">
-          开启一个故事 <ArrowUpRight :size="16" />
-        </button>
-      </div>
-      <div class="book-illustration" aria-hidden="true">
-        <div class="book-shadow"></div>
-        <div class="decor-star star-one">✦</div>
-        <div class="decor-star star-two">✧</div>
-        <div class="book back-book"></div>
-        <div class="book front-book">
-          <div class="book-spine"></div>
-          <div class="book-cover">
-            <span>A LITTLE WORLD<br />OF YOUR OWN</span>
-            <div class="cover-frame">
-              <Feather :size="42" :stroke-width="1" />
-            </div>
-            <strong>故事尚未结束</strong><small>THE NEXT PAGE IS YOURS</small>
-          </div>
-        </div>
-        <span class="illustration-caption"
-          >写给你，也写给你心里的那个世界。</span
-        >
-      </div>
-    </section>
     <div class="section-toolbar">
       <div class="section-title">
         <h2>我的故事书架</h2>
@@ -170,7 +127,7 @@ async function toggleArchive(id: string, value: boolean) {
             <h3>{{ p.title }}</h3>
             <ArrowUpRight :size="17" />
           </div>
-          <p>{{ p.premise || "故事已经准备好，等待你的第一笔。" }}</p>
+          <p>{{ p.premise || "暂无简介" }}</p>
           <div class="story-card-footer">
             <span>{{ date(p.updatedAt) }} · 最近编辑</span
             ><button
@@ -184,16 +141,15 @@ async function toggleArchive(id: string, value: boolean) {
         </div>
       </article>
       <button class="new-story-card" @click="$emit('new-story')">
-        <span><Plus :size="23" /></span><strong>还有一个故事，等你开始</strong>
-        <p>让灵感有个落脚的地方</p>
+        <span><Plus :size="23" /></span><strong>新建故事</strong>
       </button>
     </div>
     <div v-else-if="!archived && !search" class="shelf-empty">
       <div class="empty-icon"><BookOpen :size="27" :stroke-width="1.4" /></div>
-      <h3>这里会放满你的故事</h3>
-      <p>先从一个念头开始，不必一开始就想好结局。</p>
+      <h3>暂无故事</h3>
+      <p>新建故事，或打开示例了解基本功能。</p>
       <button class="text-button" @click="sample">
-        先翻翻示例故事 <ArrowRight :size="15" />
+        打开示例故事 <ArrowRight :size="15" />
       </button>
     </div>
     <div v-else class="shelf-empty">
@@ -201,8 +157,7 @@ async function toggleArchive(id: string, value: boolean) {
       <p>{{ archived ? "归档里还没有故事。" : "没有找到这本故事。" }}</p>
     </div>
     <footer class="page-footer">
-      <span>创作没有标准答案，下一页由你决定。</span
-      ><span><span class="tiny-dot"></span> 资料保存在本机</span>
+      <span><span class="tiny-dot"></span> 资料保存在本机</span>
     </footer>
   </main>
 </template>

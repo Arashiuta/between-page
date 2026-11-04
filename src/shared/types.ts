@@ -62,8 +62,58 @@ export interface Card {
   name: string;
   description: string;
   constraints: string;
+  sections: CardSection[];
+  documents: SourceDocument[];
   referenceIds: string[];
   updatedAt: string;
+}
+export interface CardSection {
+  id: string;
+  title: string;
+  content: string;
+  alwaysInclude: boolean;
+  sourceIds: string[];
+}
+export interface SourceDocument {
+  id: string;
+  name: string;
+  content: string;
+  enabled: boolean;
+}
+export type CardInput = Omit<
+  Card,
+  "id" | "updatedAt" | "sections" | "documents"
+> &
+  Partial<Pick<Card, "sections" | "documents">> & { id?: string };
+export interface MaterialDraft {
+  name: string;
+  description: string;
+  constraints: string;
+  sections: Omit<CardSection, "id">[];
+  questions: string[];
+}
+export type RoleId = TaskKind | "material";
+export interface AIRole {
+  id: RoleId;
+  prompt: string;
+  model: string;
+}
+export interface RoleSettings {
+  commonPrompt: string;
+  roles: AIRole[];
+}
+export interface MaterialCoverage {
+  card: string;
+  source: string;
+  included: number;
+  total: number;
+}
+export interface TaskPreview {
+  systemPrompt: string;
+  context: string;
+  model: string;
+  coverage: MaterialCoverage[];
+  omitted: number;
 }
 export interface Memory {
   id: string;
@@ -92,6 +142,8 @@ export interface ImageAsset {
 export interface ProviderConfig {
   baseUrl: string;
   model: string;
+  selectedModels: string[];
+  availableModels: string[];
   hasKey: boolean;
 }
 export interface Settings {
@@ -114,6 +166,7 @@ export interface Bootstrap {
   cards: Card[];
   images: ImageAsset[];
   settings: Settings;
+  roles: RoleSettings;
 }
 export interface TaskRequest {
   requestId: string;

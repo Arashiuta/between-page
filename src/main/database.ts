@@ -3,8 +3,14 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { documentToText, textToDocument } from "../shared/document";
+import {
+  normalizeCard,
+  materialLength,
+  materialLimits,
+} from "../shared/materials";
 import type {
   Card,
+  CardInput,
   Chapter,
   ImageAsset,
   Memory,
@@ -112,9 +118,9 @@ export class StoryRepository {
     );
   }
   listCards(): Card[] {
-    return this.all<Card>(
-      "SELECT payload FROM cards WHERE project_id IS NULL",
-    ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return this.all<Card>("SELECT payload FROM cards WHERE project_id IS NULL")
+      .map(normalizeCard)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
   listImages(): ImageAsset[] {
     return this.all<ImageAsset>("SELECT payload FROM images").sort((a, b) =>
@@ -131,7 +137,7 @@ export class StoryRepository {
     return this.one<Revision>("revisions", id);
   }
   getCard(id: string) {
-    return this.one<Card>("cards", id);
+    return normalizeCard(this.one<Card>("cards", id));
   }
   getImage(id: string) {
     return this.one<ImageAsset>("images", id);
@@ -146,7 +152,7 @@ export class StoryRepository {
       cards: this.all<Card>(
         "SELECT payload FROM cards WHERE project_id = ?",
         id,
-      ),
+      ).map(normalizeCard),
       memories: this.all<Memory>(
         "SELECT payload FROM memories WHERE project_id = ? ORDER BY rowid DESC",
         id,
@@ -335,7 +341,9 @@ export class StoryRepository {
       return chapter;
     })();
   }
-  saveCard(input: Omit<Card, "id" | "updatedAt"> & { id?: string }): Card {
+  saveCard(input: CardInput): Card {
+    if (materialLength(input) > materialLimits.card)
+      throw new Error("单份资料总量超过 40 万字，请拆成多个资料条目。");
     if (input.projectId) this.getProject(input.projectId);
     if (input.id) {
       const existing = this.getCard(input.id);
@@ -344,6 +352,8 @@ export class StoryRepository {
     }
     const card: Card = {
       ...input,
+      sections: input.sections ?? [],
+      documents: input.documents ?? [],
       id: input.id || randomUUID(),
       updatedAt: now(),
     };

@@ -17,6 +17,7 @@ import {
   Check,
   LoaderCircle,
   AlertCircle,
+  Bot,
 } from "lucide-vue-next";
 import { useWorkspace } from "./stores/workspace";
 const store = useWorkspace(),
@@ -44,19 +45,33 @@ const nav = [
   { to: "/", label: "故事书架", icon: Library },
   { to: "/cards", label: "创作资料", icon: Users },
   { to: "/gallery", label: "插画收藏", icon: Images },
+  { to: "/roles", label: "AI 职责", icon: Bot },
 ];
 const theme = {
   common: {
-    primaryColor: "#315d4e",
-    primaryColorHover: "#45755f",
-    primaryColorPressed: "#234737",
+    primaryColor: "#2563eb",
+    primaryColorHover: "#1d4ed8",
+    primaryColorPressed: "#1e40af",
+    primaryColorSuppl: "#2563eb",
+    textColorBase: "#1f2937",
+    textColor1: "#1f2937",
+    textColor2: "#374151",
+    textColor3: "#4b5563",
+    placeholderColor: "#6b7280",
+    borderColor: "#d1d5db",
+    bodyColor: "#f5f7fa",
+    cardColor: "#ffffff",
+    modalColor: "#ffffff",
+    popoverColor: "#ffffff",
+    inputColor: "#ffffff",
+    fontSize: "14px",
     borderRadius: "8px",
     fontFamily: '"Segoe UI", "Microsoft YaHei", sans-serif',
     baseColor: "#ffffff",
   },
   Input: {
-    borderFocus: "1px solid #7b9b86",
-    boxShadowFocus: "0 0 0 2px rgba(49,93,78,.08)",
+    borderFocus: "1px solid #2563eb",
+    boxShadowFocus: "0 0 0 2px rgba(37,99,235,.12)",
   },
 };
 onMounted(async () => {
@@ -100,7 +115,7 @@ async function create() {
           <div><strong>页间</strong><span>BETWEEN PAGES</span></div>
         </div>
         <button class="new-story-button" @click="showCreate">
-          <Plus :size="17" /> 开启一个故事 <span>＋</span>
+          <Plus :size="17" /> 新建故事
         </button>
         <div class="nav-label">我的创作空间</div>
         <nav>
@@ -134,7 +149,7 @@ async function create() {
           class="sidebar-stories"
           v-if="store.projects.some((p) => !p.archived)"
         >
-          <div class="nav-label">最近翻阅</div>
+          <div class="nav-label">最近编辑</div>
           <RouterLink
             v-for="p in store.projects.filter((p) => !p.archived).slice(0, 4)"
             :key="p.id"
@@ -145,12 +160,6 @@ async function create() {
           >
         </div>
         <div class="sidebar-bottom">
-          <div class="sidebar-note">
-            <Feather :size="19" />
-            <p>
-              一个念头，一页故事。<br /><span>你的角色，还有很多种可能。</span>
-            </p>
-          </div>
           <RouterLink
             to="/settings"
             :class="['nav-item', { active: route.path === '/settings' }]"
@@ -158,13 +167,14 @@ async function create() {
             ><ArrowUpRight :size="14"
           /></RouterLink>
           <div class="local-caption">
-            <span></span> 本地创作空间 <span class="version">v0.1</span>
+            <span></span> 本地存储
+            <span class="version">{{ store.settings?.version }}</span>
           </div>
         </div>
       </aside>
       <div class="main-shell">
         <header class="titlebar">
-          <span><Feather :size="13" /> 留一点空间，给想象。</span>
+          <span>页间 · 故事创作工作台</span>
           <div class="titlebar-right">
             <span
               v-if="store.saveFailed"
@@ -213,7 +223,7 @@ async function create() {
         <RouterView v-else-if="store.ready" @new-story="showCreate" />
         <div v-else class="startup-error">
           <LoaderCircle class="spin" :size="30" />
-          <p>正在翻开你的故事……</p>
+          <p>正在加载…</p>
         </div>
       </div>
       <Transition name="toast"
@@ -227,18 +237,15 @@ async function create() {
       <NModal
         v-model:show="newStory"
         preset="card"
-        title="开启一个故事"
+        title="新建故事"
         class="form-modal"
         :style="{ width: '580px' }"
         :mask-closable="!creating"
       >
-        <p class="modal-description">
-          从你的角色、一个场景，或者还没成形的念头开始。
-        </p>
         <label class="field-label">故事名称</label
         ><NInput
           v-model:value="form.title"
-          placeholder="给这段旅程起个名字"
+          placeholder="输入故事名称"
           :maxlength="100"
           autofocus
           @keyup.enter="create"
@@ -279,9 +286,9 @@ async function create() {
         <template #footer
           ><div class="modal-footer">
             <NButton @click="newStory = false" :disabled="creating"
-              >再想一会儿</NButton
+              >取消</NButton
             ><NButton type="primary" :loading="creating" @click="create"
-              >翻开第一页 <template #icon><ArrowUpRight :size="16" /></template
+              >创建故事 <template #icon><ArrowUpRight :size="16" /></template
             ></NButton></div
         ></template>
       </NModal>

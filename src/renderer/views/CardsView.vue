@@ -25,11 +25,10 @@ function open(card: Card | null) {
 </script>
 <template>
   <main class="page">
-    <div class="page-eyebrow">THE SEEDS OF A STORY</div>
     <div class="page-heading">
       <div>
-        <h1>把心里的世界，收好。</h1>
-        <p>角色、世界与零碎灵感，都可以成为下一本故事的起点。</p>
+        <h1>创作资料</h1>
+        <p>管理角色、世界观和灵感，创建故事时可复制使用。</p>
       </div>
       <button class="button primary" @click="open(null)">
         <Plus :size="16" />添加创作资料
@@ -79,7 +78,15 @@ function open(card: Card | null) {
         </div>
         <div class="asset-card-body">
           <h3>{{ card.name }}<ArrowUpRight :size="16" /></h3>
-          <p>{{ card.description || "还没写完的设定，留给下一次灵感。" }}</p>
+          <p>
+            {{
+              card.description ||
+              card.sections.map((section) => section.title).join("、") ||
+              (card.documents.length
+                ? `${card.documents.length} 份原始文档`
+                : "暂无描述")
+            }}
+          </p>
           <span>{{
             card.referenceIds.length
               ? card.referenceIds.length + " 张参考图"
@@ -98,13 +105,13 @@ function open(card: Card | null) {
       <h3>
         {{
           filter === "character"
-            ? "先认识你的第一个角色"
+            ? "暂无角色"
             : filter === "world"
-              ? "每个世界都有自己的规则"
-              : "灵感不需要完整，也值得被记下"
+              ? "暂无世界观"
+              : "暂无灵感"
         }}
       </h3>
-      <p>从已有的设定开始，不必把每个空白都填满。</p>
+      <p>点击下方按钮添加资料。</p>
       <button class="button" @click="open(null)">
         <Plus :size="15" />添加{{
           filter === "character"
@@ -115,9 +122,7 @@ function open(card: Card | null) {
         }}
       </button>
     </div>
-    <p class="page-footer">
-      资料库是起点。每个故事会保留自己的设定副本，经历各自的变化。
-    </p>
+    <p class="page-footer">每个故事使用独立的资料副本，修改互不影响。</p>
     <CardEditor
       v-model:show="show"
       :card="editing"

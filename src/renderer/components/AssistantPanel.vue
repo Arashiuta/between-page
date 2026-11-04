@@ -15,9 +15,36 @@ import {
   LoaderCircle,
 } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
-import type { TaskKind } from "../../shared/types";
+import type { TaskKind, TaskPreview } from "../../shared/types";
+import { effectiveRole, roleDefinitions } from "../../shared/roles";
 const store = useWorkspace(),
   expanded = ref(false);
+const inspecting = ref(false),
+  previewLoading = ref(false),
+  preview = ref<TaskPreview | null>(null);
+const currentRole = computed(() => effectiveRole(store.roles, store.taskKind));
+const roleName = computed(
+  () => roleDefinitions.find((role) => role.id === store.taskKind)!.name,
+);
+const currentModel = computed(
+  () => currentRole.value.model || store.settings?.text.model || "",
+);
+async function inspect() {
+  previewLoading.value = true;
+  await store.safe(async () => {
+    await store.flush();
+    preview.value = await store.api<TaskPreview>("ai:preview", {
+      requestId: crypto.randomUUID(),
+      kind: store.taskKind,
+      projectId: store.detail!.project.id,
+      chapterId: store.chapter?.id,
+      instruction: store.instruction,
+      selection: store.selection?.text,
+    });
+    inspecting.value = true;
+  });
+  previewLoading.value = false;
+}
 defineEmits<{
   apply: [mode: "replace" | "append" | "outline" | "selection" | "prompt"];
 }>();
@@ -54,8 +81,7 @@ const outlineOutput = computed(() =>
     <div class="assistant-heading">
       <div class="assistant-avatar"><Sparkles :size="19" /></div>
       <div>
-        <h3>创作搭档</h3>
-        <span>一起，把故事往前写。</span>
+        <h3>AI 创作</h3>
       </div>
       <span
         class="online-dot"
@@ -63,11 +89,31 @@ const outlineOutput = computed(() =>
       ></span>
     </div>
     <div class="assistant-body">
-      <div class="assistant-greeting">
-        <span class="small-label">A LITTLE INSPIRATION</span>
-        <p>下一页，<br />你想让什么发生？</p>
+      <div class="role-current">
+        <strong>职责：{{ roleName }}</strong
+        ><RouterLink :to="{ path: '/roles', query: { role: store.taskKind } }"
+          >编辑职责</RouterLink
+        >
       </div>
-      <label class="field-label first">这次一起做什么</label
+      <label class="field-label first">{{
+        currentRole.model ? "文字模型（职责指定）" : "文字模型"
+      }}</label>
+      <NSelect
+        :value="currentModel || null"
+        :options="
+          store.settings?.text.selectedModels.map((id) => ({
+            label: id,
+            value: id,
+          })) || []
+        "
+        placeholder="在设置中勾选模型"
+        :disabled="store.busy || !!currentRole.model"
+        filterable
+        @update:value="
+          (value) => store.safe(() => store.setModel('text', value))
+        "
+      />
+      <label class="field-label">任务类型</label
       ><NSelect
         :value="store.taskKind"
         @update:value="store.taskKind = $event"
@@ -93,6 +139,14 @@ const outlineOutput = computed(() =>
       <div class="context-note">
         <BookOpen :size="13" /><span>自动参考本故事的设定与有效记忆</span>
       </div>
+      <NButton
+        text
+        class="context-inspect"
+        :loading="previewLoading"
+        :disabled="store.busy"
+        @click="inspect"
+        >查看职责与本次参考内容</NButton
+      >
       <NButton
         v-if="!store.busy"
         type="primary"
@@ -122,7 +176,7 @@ const outlineOutput = computed(() =>
               class="spin"
               :size="13"
             /><CheckCircle2 v-else :size="13" />{{
-              store.busy ? "正在构思……" : "这次的创作结果"
+              store.busy ? "正在生成…" : "生成结果"
             }}</span
           ><button
             aria-label="展开创作结果"
@@ -133,7 +187,7 @@ const outlineOutput = computed(() =>
           </button>
         </div>
         <pre class="result-preview" @dblclick="expanded = true">{{
-          store.output || "让想法慢慢成形……"
+          store.output || "等待模型响应…"
         }}</pre>
         <button class="text-button result-expand" @click="expanded = true">
           展开阅读与编辑 <ArrowUpRight :size="13" />
@@ -173,17 +227,39 @@ const outlineOutput = computed(() =>
           </button>
         </div>
       </div>
-      <div v-else class="assistant-tip">
-        <span>一点小提示</span>
-        <p>
-          不必一次想好所有细节。你可以先让角色经历一次相遇，再决定故事会走向哪里。
-        </p>
-        <div class="tip-line"></div>
-      </div>
     </div>
     <div class="assistant-footnote">
       <CornerDownLeft :size="12" /> 生成内容先留在草稿区，由你决定采用。
     </div>
+    <NDrawer v-model:show="inspecting" :width="800"
+      ><NDrawerContent title="本次职责与参考内容" closable
+        ><template v-if="preview"
+          ><p class="material-help">
+            模型：{{
+              preview.model || "尚未设置"
+            }}。以下为当前编辑状态下构建的请求预览。
+          </p>
+          <h3>完整系统提示词</h3>
+          <pre class="effective-prompt">{{ preview.systemPrompt }}</pre>
+          <h3>创作资料覆盖情况</h3>
+          <p class="field-help">
+            固定设定与“始终参考”分区完整保留；原文按段选取。{{
+              preview.omitted
+                ? `本次有 ${preview.omitted} 个片段未装入，可调整本章计划、整理资料或标记关键分区。`
+                : "本次已装入全部启用的创作资料。"
+            }}
+          </p>
+          <div class="coverage-list">
+            <div v-for="(item, index) in preview.coverage" :key="index">
+              <strong>{{ item.card }} · {{ item.source }}</strong
+              ><span>{{ item.included }} / {{ item.total }} 段</span>
+            </div>
+          </div>
+          <h3>完整参考上下文</h3>
+          <pre class="effective-prompt">{{ preview.context }}</pre>
+        </template></NDrawerContent
+      ></NDrawer
+    >
     <NDrawer v-model:show="expanded" :width="680"
       ><NDrawerContent title="创作草稿" closable
         ><p class="muted small">
@@ -205,11 +281,56 @@ const outlineOutput = computed(() =>
         </div>
         <template #footer
           ><div class="modal-footer">
-            <NButton v-if="!store.busy && chapterOutput && store.output" type="primary" @click="$emit('apply','append');expanded=false">追加到本章</NButton>
-            <NButton v-if="!store.busy && chapterOutput && store.output" @click="$emit('apply','replace');expanded=false">替换正文</NButton>
-            <NButton v-if="!store.busy && outlineOutput && store.output" type="primary" @click="$emit('apply','outline');expanded=false">写入故事蓝图</NButton>
-            <NButton v-if="!store.busy && store.outputKind==='revise' && store.outputSelection" type="primary" @click="$emit('apply','selection');expanded=false">替换选中文段</NButton>
-            <NButton v-if="!store.busy && store.outputKind==='prompt' && store.output" type="primary" @click="$emit('apply','prompt');expanded=false">去生成插画</NButton>
+            <NButton
+              v-if="!store.busy && chapterOutput && store.output"
+              type="primary"
+              @click="
+                $emit('apply', 'append');
+                expanded = false;
+              "
+              >追加到本章</NButton
+            >
+            <NButton
+              v-if="!store.busy && chapterOutput && store.output"
+              @click="
+                $emit('apply', 'replace');
+                expanded = false;
+              "
+              >替换正文</NButton
+            >
+            <NButton
+              v-if="!store.busy && outlineOutput && store.output"
+              type="primary"
+              @click="
+                $emit('apply', 'outline');
+                expanded = false;
+              "
+              >写入故事蓝图</NButton
+            >
+            <NButton
+              v-if="
+                !store.busy &&
+                store.outputKind === 'revise' &&
+                store.outputSelection
+              "
+              type="primary"
+              @click="
+                $emit('apply', 'selection');
+                expanded = false;
+              "
+              >替换选中文段</NButton
+            >
+            <NButton
+              v-if="
+                !store.busy && store.outputKind === 'prompt' && store.output
+              "
+              type="primary"
+              @click="
+                $emit('apply', 'prompt');
+                expanded = false;
+              "
+              >去生成插画</NButton
+            >
             <NButton @click="expanded = false">回到故事</NButton
             ><NButton v-if="store.busy" @click="store.safe(store.stopTask)"
               >停止生成</NButton

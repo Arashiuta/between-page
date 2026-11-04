@@ -5,8 +5,17 @@ import { randomUUID } from "node:crypto";
 import { readFile, writeFile, copyFile, stat } from "node:fs/promises";
 import { z } from "zod";
 import { StoryRepository } from "./database";
-import { chat, generateImage, type Connection } from "./provider";
+import { chat, generateImage, listModels, type Connection } from "./provider";
+import { modelSelection } from "../shared/models";
 import { buildTask, parseMemories } from "./prompts";
+import {
+  importTextDocument,
+  buildMaterialMessages,
+  parseMaterialDraft,
+} from "./materials";
+import { roleSettings } from "./roles";
+import { effectiveRole, roleDefinitions } from "../shared/roles";
+import { materialLimits } from "../shared/materials";
 import {
   resolveDataDir,
   initializeDirectories,
@@ -22,6 +31,8 @@ import type {
   ImageAsset,
   TaskRequest,
   DocumentNode,
+  RoleId,
+  RoleSettings,
 } from "../shared/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +60,41 @@ const idSchema = z.string().uuid();
 const shortText = z.string().max(500);
 const longText = z.string().max(200_000);
 const kindSchema = z.enum(["character", "world", "inspiration"]);
+const roleIdSchema = z.enum([
+  "chapter",
+  "outline",
+  "adjust",
+  "check",
+  "notes",
+  "prompt",
+  "revise",
+  "organize",
+  "material",
+]);
+const sourceDocumentSchema = z.object({
+  id: idSchema,
+  name: shortText.trim().min(1),
+  content: z.string().max(materialLimits.document),
+  enabled: z.boolean(),
+});
+const cardSectionSchema = z.object({
+  id: idSchema,
+  title: z.string().trim().min(1).max(200),
+  content: longText,
+  alwaysInclude: z.boolean(),
+  sourceIds: z.array(idSchema).max(12),
+});
+const cardContentSchema = z.object({
+  name: shortText.trim(),
+  kind: kindSchema,
+  description: longText,
+  constraints: longText,
+  sections: z.array(cardSectionSchema).max(materialLimits.sections).default([]),
+  documents: z
+    .array(sourceDocumentSchema)
+    .max(materialLimits.documents)
+    .default([]),
+});
 const memoryKindSchema = z.enum([
   "fact",
   "state",
@@ -77,6 +123,15 @@ const connection = (kind: "text" | "image"): Connection => ({
   ...settings(repo, dataDir)[kind],
   key: readKey(repo, kind),
 });
+function connectionForRole(id: RoleId): Connection {
+  const config = connection("text");
+  const model = effectiveRole(roleSettings(repo), id).model;
+  if (model && !settings(repo, dataDir).text.selectedModels.includes(model))
+    throw new Error(
+      "此 AI 职责指定的模型已不在已选列表中，请到「AI 职责」修改模型，或在设置中重新勾选。",
+    );
+  return { ...config, model: model || config.model };
+}
 const taskSchema = z.object({
   requestId: idSchema,
   kind: z.enum([
@@ -107,6 +162,7 @@ const handlers: Record<
     cards: repo.listCards(),
     images: repo.listImages(),
     settings: settings(repo, dataDir),
+    roles: roleSettings(repo),
   }),
   "project:get": (p) => repo.getDetail(idSchema.parse(p)),
   "scratch:get": (p) => {
@@ -187,19 +243,105 @@ const handlers: Record<
   "chapter:revisions": (p) => repo.listRevisions(idSchema.parse(p)),
   "chapter:restore": (p) => repo.restoreRevision(idSchema.parse(p)),
   "card:save": (p) => {
-    const card = z
-      .object({
+    const card = cardContentSchema
+      .extend({
         id: idSchema.optional(),
         projectId: idSchema.nullable(),
-        kind: kindSchema,
         name: shortText.trim().min(1),
-        description: longText,
-        constraints: longText,
         referenceIds: z.array(idSchema).max(12),
       })
       .parse(p);
     for (const ref of card.referenceIds) repo.getImage(ref);
     return repo.saveCard(card);
+  },
+  "card:import": async () => {
+    const result = await dialog.showOpenDialog({
+      title: "导入设定文档",
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "文字文档", extensions: ["txt", "md", "markdown"] }],
+    });
+    if (result.canceled) return [];
+    if (result.filePaths.length > materialLimits.documents)
+      throw new Error("一次最多导入 12 份文档。");
+    const documents = [];
+    for (const path of result.filePaths) {
+      if ((await stat(path)).size > 2_000_000)
+        throw new Error(`${basename(path)} 超过 2 MB，请拆分后导入。`);
+      documents.push(importTextDocument(path, await readFile(path)));
+    }
+    return documents;
+  },
+  "card:organize": async (p) => {
+    const { requestId, instruction, card } = z
+      .object({
+        requestId: idSchema,
+        instruction: longText,
+        card: cardContentSchema,
+      })
+      .parse(p);
+    if (jobs.has(requestId)) throw new Error("任务已经开始。");
+    const messages = buildMaterialMessages(
+      roleSettings(repo),
+      { ...card, projectId: null, referenceIds: [] },
+      instruction,
+    );
+    const controller = new AbortController();
+    jobs.set(requestId, controller);
+    try {
+      const output = await chat(
+        connectionForRole("material"),
+        messages,
+        () => {},
+        controller.signal,
+      );
+      if (controller.signal.aborted)
+        throw new Error("整理已停止，现有资料和原始文档已保留。");
+      return parseMaterialDraft(
+        output,
+        card.documents.filter((doc) => doc.enabled).map((doc) => doc.id),
+      );
+    } finally {
+      jobs.delete(requestId);
+    }
+  },
+  "roles:save": (p) => {
+    const value: RoleSettings = z
+      .object({
+        commonPrompt: z.string().max(20000),
+        roles: z
+          .array(
+            z.object({
+              id: roleIdSchema,
+              prompt: z.string().trim().min(1).max(20000),
+              model: shortText.trim(),
+            }),
+          )
+          .length(roleDefinitions.length),
+      })
+      .parse(p);
+    if (
+      new Set(value.roles.map((role) => role.id)).size !==
+      roleDefinitions.length
+    )
+      throw new Error("AI 职责重复或缺失，请刷新后重试。");
+    const available = settings(repo, dataDir).text.selectedModels;
+    if (
+      value.roles.some((role) => role.model && !available.includes(role.model))
+    )
+      throw new Error("请为职责选择已勾选的文字模型，或改为跟随当前文字模型。");
+    repo.setSetting("ai.roles", value);
+    return roleSettings(repo);
+  },
+  "ai:preview": (p) => {
+    const request = taskSchema.parse(p);
+    const built = buildTask(repo, request);
+    return {
+      systemPrompt: built.messages[0].content,
+      context: built.messages[1].content,
+      model: connectionForRole(request.kind).model,
+      coverage: built.coverage,
+      omitted: built.omitted,
+    };
   },
   "card:copy": (p) => {
     const v = z
@@ -225,6 +367,8 @@ const handlers: Record<
     const provider = z.object({
       baseUrl: z.string().trim().url().max(2000),
       model: shortText.trim(),
+      selectedModels: z.array(shortText.trim().min(1)).max(200),
+      availableModels: z.array(shortText.trim().min(1)).max(3200),
       key: z.string().max(4000).optional(),
       clearKey: z.boolean().optional(),
     });
@@ -247,13 +391,53 @@ const handlers: Record<
         )
           throw new Error("请输入有效的 HTTP 或 HTTPS 接口地址。");
         repo.setSetting(`${kind}.url`, c.baseUrl);
-        repo.setSetting(`${kind}.model`, c.model);
-        if (c.clearKey) repo.setSetting(`${kind}.key`, "");
+        const selection = modelSelection(
+          c.model,
+          c.selectedModels,
+          c.availableModels,
+        );
+        repo.setSetting(`${kind}.model`, selection.model);
+        repo.setSetting(`${kind}.selectedModels`, selection.selectedModels);
+        repo.setSetting(`${kind}.availableModels`, selection.availableModels);
+        if (c.clearKey) saveKey(repo, kind, "");
         else if (c.key?.trim()) saveKey(repo, kind, c.key.trim());
       }
       repo.setSetting("image.size", value.imageSize);
       repo.setSetting("image.quality", value.imageQuality);
     })();
+    return settings(repo, dataDir);
+  },
+  "settings:models": async (p) => {
+    const value = z
+      .object({
+        kind: z.enum(["text", "image"]),
+        baseUrl: z.string().trim().url().max(2000),
+        key: z.string().max(4000).optional(),
+        clearKey: z.boolean().optional(),
+      })
+      .parse(p);
+    const key = value.clearKey
+      ? ""
+      : value.key?.trim() || readKey(repo, value.kind);
+    try {
+      return await listModels({ baseUrl: value.baseUrl, key });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "获取模型失败。";
+      throw new Error(key ? message.split(key).join("[已隐藏]") : message);
+    }
+  },
+  "settings:model": (p) => {
+    const value = z
+      .object({
+        kind: z.enum(["text", "image"]),
+        model: shortText.trim().min(1),
+      })
+      .parse(p);
+    if (
+      !settings(repo, dataDir)[value.kind].selectedModels.includes(value.model)
+    )
+      throw new Error("请先在设置中勾选并保存此模型。");
+    repo.setSetting(`${value.kind}.model`, value.model);
     return settings(repo, dataDir);
   },
   "settings:test": async (p) => {
@@ -276,7 +460,7 @@ const handlers: Record<
     jobs.set(request.requestId, controller);
     try {
       const text = await chat(
-        connection("text"),
+        connectionForRole(request.kind),
         built.messages,
         (delta) => {
           if (!event.sender.isDestroyed())
@@ -453,10 +637,16 @@ const handlers: Record<
   "storage:open": () => shell.openPath(dataDir),
   "storage:move": async () => {
     assertIdle();
-    maintenance=true;
+    maintenance = true;
     try {
-      if (!(await migrateData(repo, dataDir))) {maintenance=false;return false;}
-    } catch(error) {maintenance=false;throw error;}
+      if (!(await migrateData(repo, dataDir))) {
+        maintenance = false;
+        return false;
+      }
+    } catch (error) {
+      maintenance = false;
+      throw error;
+    }
     setTimeout(() => {
       app.relaunch();
       closing = true;
@@ -482,7 +672,7 @@ async function createWindow() {
     minWidth: 1100,
     minHeight: 720,
     frame: false,
-    backgroundColor: "#f7f7f2",
+    backgroundColor: "#f5f7fa",
     title: "页间 · 故事创作工作台",
     show: false,
     webPreferences: {
@@ -554,7 +744,7 @@ if (hasLock) {
           )
             return { ok: false, error: "不支持的操作。" };
           try {
-            if(maintenance) throw new Error('正在迁移数据，请稍候再操作。');
+            if (maintenance) throw new Error("正在迁移数据，请稍候再操作。");
             return { ok: true, data: await handlers[action](payload, event) };
           } catch (error) {
             let message =

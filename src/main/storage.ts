@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { ZipFile } from "yazl";
 import type { StoryRepository } from "./database";
 import type { Settings, ProviderConfig } from "../shared/types";
+import { modelSelection } from "../shared/models";
 
 export const programDir = app.isPackaged
   ? process.env.PORTABLE_EXECUTABLE_DIR || dirname(process.execPath)
@@ -44,11 +45,17 @@ export function initializeDirectories(dataDir: string) {
   app.setAppLogsPath(join(dataDir, "runtime", "logs"));
 }
 export function readKey(repo: StoryRepository, kind: "text" | "image"): string {
-  const encrypted = repo.getSetting<string>(`${kind}.key`, "");
-  if (!encrypted) return "";
+  const stored = repo.getSetting<string>(`${kind}.key`, "");
+  if (!stored) return "";
+  if (repo.getSetting<string>(`${kind}.keyFormat`, "") === "plain")
+    return stored;
   try {
-    return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+    // Only older versions used Windows encryption. Migrate once on this account.
+    const key = safeStorage.decryptString(Buffer.from(stored, "base64"));
+    saveKey(repo, kind, key);
+    return key;
   } catch {
+    // Keep the original record if it cannot be decrypted on this computer.
     return "";
   }
 }
@@ -57,19 +64,21 @@ export function saveKey(
   kind: "text" | "image",
   key: string,
 ) {
-  if (!safeStorage.isEncryptionAvailable())
-    throw new Error("系统密钥加密服务不可用，暂时无法保存 Key。");
-  repo.setSetting(
-    `${kind}.key`,
-    safeStorage.encryptString(key).toString("base64"),
-  );
+  repo.db.transaction(() => {
+    repo.setSetting(`${kind}.key`, key);
+    repo.setSetting(`${kind}.keyFormat`, "plain");
+  })();
 }
 export function settings(repo: StoryRepository, dataDir: string): Settings {
   const provider = (kind: "text" | "image"): ProviderConfig => ({
     baseUrl: repo.getSetting(`${kind}.url`, "https://api.openai.com/v1"),
-    model: repo.getSetting(
-      `${kind}.model`,
-      kind === "image" ? "gpt-image-2" : "",
+    ...modelSelection(
+      repo.getSetting(`${kind}.model`, kind === "image" ? "gpt-image-2" : ""),
+      repo.getSetting<string[] | undefined>(
+        `${kind}.selectedModels`,
+        undefined,
+      ),
+      repo.getSetting(`${kind}.availableModels`, []),
     ),
     hasKey: !!readKey(repo, kind),
   });
@@ -111,7 +120,7 @@ export async function makeBackup(
     await repo.backup(join(staging, "database", "storybook.sqlite"));
     await writeFile(
       join(staging, "恢复说明.txt"),
-      "关闭页间后，将本备份中的 database 和 assets 文件夹复制到软件的 data 目录。覆盖前先备份原目录。Key 使用 Windows 账户加密，换电脑后请重新填写。\n",
+      "关闭页间后，将本备份中的 database 和 assets 文件夹复制到软件的 data 目录。覆盖前先备份原目录。API Key 明文保存在数据库中，随完整备份一起保存。\n",
       "utf8",
     );
     const archive = new ZipFile();

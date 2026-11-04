@@ -15,6 +15,7 @@ import {
 } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import type { Settings as SettingsType } from "../../shared/types";
+import ProviderModels from "../components/ProviderModels.vue";
 const store = useWorkspace(),
   saving = ref(false),
   testing = ref(false),
@@ -25,12 +26,16 @@ const form = ref({
   text: {
     baseUrl: store.settings!.text.baseUrl,
     model: store.settings!.text.model,
+    selectedModels: [...store.settings!.text.selectedModels],
+    availableModels: [...store.settings!.text.availableModels],
     key: "",
     clearKey: false,
   },
   image: {
     baseUrl: store.settings!.image.baseUrl,
     model: store.settings!.image.model,
+    selectedModels: [...store.settings!.image.selectedModels],
+    availableModels: [...store.settings!.image.availableModels],
     key: "",
     clearKey: false,
   },
@@ -40,8 +45,10 @@ const form = ref({
 async function save() {
   saving.value = true;
   const result = await store.safe(async () => {
-    await store.api<SettingsType>("settings:save", form.value);
+    const saved = await store.api<SettingsType>("settings:save", form.value);
     await store.bootstrap();
+    Object.assign(form.value.text, saved.text);
+    Object.assign(form.value.image, saved.image);
     form.value.text.key = "";
     form.value.image.key = "";
     form.value.text.clearKey = false;
@@ -85,11 +92,9 @@ function openFolder() {
 </script>
 <template>
   <main class="page settings-page">
-    <div class="page-eyebrow">MAKE YOURSELF AT HOME</div>
     <div class="page-heading">
       <div>
-        <h1>让工具，顺着你的习惯。</h1>
-        <p>连接你选择的模型服务，故事与插画保存在自己的电脑。</p>
+        <h1>设置与模型</h1>
       </div>
       <NButton type="primary" :loading="saving" @click="save"
         ><template #icon><Check :size="16" /></template>保存设置</NButton
@@ -120,7 +125,7 @@ function openFolder() {
           show-password-on="click"
           :placeholder="
             currentSettings?.text.hasKey
-              ? '已加密保存；留空保留原 Key'
+              ? '已保存；留空保留原 Key'
               : '填写你的文字模型 Key'
           "
           autocomplete="off"
@@ -129,11 +134,8 @@ function openFolder() {
           v-model:checked="form.text.clearKey"
           class="key-checkbox"
           >清除已保存的 Key</NCheckbox
-        ><label class="field-label">模型名称</label
-        ><NInput
-          v-model:value="form.text.model"
-          placeholder="填写服务商提供的模型名称"
-        />
+        >
+        <ProviderModels v-model="form.text" kind="text" />
         <div class="settings-card-footer">
           <span>兼容聊天接口 · 支持流式输出</span
           ><NButton size="small" :loading="testing" @click="test"
@@ -167,7 +169,7 @@ function openFolder() {
           show-password-on="click"
           :placeholder="
             currentSettings?.image.hasKey
-              ? '已加密保存；留空保留原 Key'
+              ? '已保存；留空保留原 Key'
               : '填写你的生图服务 Key'
           "
           autocomplete="off"
@@ -176,11 +178,8 @@ function openFolder() {
           v-model:checked="form.image.clearKey"
           class="key-checkbox"
           >清除已保存的 Key</NCheckbox
-        ><label class="field-label">模型名称</label
-        ><NInput
-          v-model:value="form.image.model"
-          placeholder="gpt-image-2 或服务商使用的别名"
-        />
+        >
+        <ProviderModels v-model="form.image" kind="image" />
         <div class="form-two-columns">
           <div>
             <label class="field-label">默认尺寸</label
@@ -216,7 +215,7 @@ function openFolder() {
       <div class="settings-card-heading">
         <span class="settings-icon"><HardDrive :size="20" /></span>
         <div>
-          <h2>你的故事，保存在这里</h2>
+          <h2>数据存储</h2>
           <p>数据库、参考图、插画、备份与运行缓存集中管理</p>
         </div>
       </div>
@@ -252,7 +251,7 @@ function openFolder() {
       </div>
       <div class="info-note">
         <KeyRound :size="14" /><span
-          >Key 使用当前 Windows 账户加密保存。换电脑后通常需要重新填写。</span
+          >API Key 明文保存在本地数据库中，完整备份会一并包含。</span
         >
       </div>
     </section>
