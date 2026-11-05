@@ -18,6 +18,7 @@ import {
   LoaderCircle,
   AlertCircle,
   Bot,
+  CircleHelp,
 } from "lucide-vue-next";
 import { useWorkspace } from "./stores/workspace";
 import brandMark from "./assets/brand-mark.svg";
@@ -161,6 +162,12 @@ async function create() {
           >
         </div>
         <div class="sidebar-bottom">
+          <RouterLink
+            to="/help"
+            :class="['nav-item', { active: route.path === '/help' }]"
+            ><CircleHelp :size="18" /><span>帮助</span
+            ><ArrowUpRight :size="14"
+          /></RouterLink>
           <RouterLink
             to="/settings"
             :class="['nav-item', { active: route.path === '/settings' }]"

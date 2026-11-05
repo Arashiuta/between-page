@@ -8,7 +8,9 @@ import {
   Feather,
   ArrowRight,
   Archive,
+  Trash2,
 } from "lucide-vue-next";
+import { NPopconfirm } from "naive-ui";
 import { useWorkspace } from "../stores/workspace";
 import { textToDocument } from "../../shared/document";
 const store = useWorkspace(),
@@ -51,8 +53,13 @@ async function sample() {
         "一座经常起雾的海边小城。旧书店名为「第十三页」，晚上八点开门，凌晨两点打烊。这里偶尔发生难以解释的小事，但生活仍按自己的节奏继续。",
       style:
         "第三人称有限视角，跟随林屿。对白克制，以动作与细节表达情绪。让悬疑自然地藏在日常里。",
-      outline:
-        "一、陌生的来信：林屿收到一封写着明日天气的信。\n二、迟到的客人：信里提到的人走进书店。\n三、没有寄出的回信：林屿决定试着给未知的人回复。\n\n后续保持开放，探索来信与林屿过去的关系。",
+      blueprintSections: [
+        { id: "core-conflict", title: "核心冲突", content: "一、陌生的来信：林屿收到一封写着明日天气的信。\n二、迟到的客人：信里提到的人走进书店。\n三、没有寄出的回信：林屿决定试着给未知的人回复。\n\n后续保持开放，探索来信与林屿过去的关系。" },
+        { id: "character-arcs", title: "角色弧线", content: "林屿从回避过去，逐步学会回应未知来信与真实关系。" },
+        { id: "story-phases", title: "阶段推进", content: "先建立书店日常，再让来信逐渐触及林屿的过去。" },
+        { id: "foreshadowing", title: "伏笔", content: "无风时响起的风铃；信封边角干燥。" },
+        { id: "open-questions", title: "待确认事项", content: "来信者的身份与来信机制保持开放。" },
+      ],
     });
     store.editChapter({
       title: "第一章 · 雾把门推开",
@@ -70,6 +77,15 @@ async function toggleArchive(id: string, value: boolean) {
     await store.api("project:update", { id, archived: value });
     await store.bootstrap();
     store.notify(value ? "故事已收进归档，可随时恢复。" : "故事已回到书架。");
+  });
+}
+async function deleteProject(id: string) {
+  const project = store.projects.find((item) => item.id === id);
+  if (!project?.archived) return;
+  await store.safe(async () => {
+    await store.api("project:delete", id);
+    await store.bootstrap();
+    store.notify(`《${project.title}》及其专属内容已彻底删除。`);
   });
 }
 </script>
@@ -131,12 +147,20 @@ async function toggleArchive(id: string, value: boolean) {
           <div class="story-card-footer">
             <span>{{ date(p.updatedAt) }} · 最近编辑</span
             ><button
+              v-if="!archived"
               class="icon-button"
               :aria-label="p.archived ? '恢复故事' : '归档故事'"
               @click.stop="toggleArchive(p.id, !p.archived)"
             >
               <Archive :size="14" />
-            </button>
+            </button><NPopconfirm
+              v-else
+              positive-text="彻底删除"
+              negative-text="取消"
+              @positive-click="deleteProject(p.id)"
+              ><template #trigger><button class="icon-button danger-icon" :aria-label="`彻底删除故事《${p.title}》`" @click.stop><Trash2 :size="14" /></button></template>
+              确定彻底删除《{{ p.title }}》？章节、版本、记忆和故事专属图片将一并删除。此操作无法撤销。
+            </NPopconfirm>
           </div>
         </div>
       </article>

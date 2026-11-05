@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, protocol, dialog, shell } from "electron";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile, copyFile, stat } from "node:fs/promises";
+import { readFile, writeFile, copyFile, stat, unlink } from "node:fs/promises";
 import { z } from "zod";
 import { StoryRepository } from "./database";
 import { chat, generateImage, listModels, type Connection } from "./provider";
@@ -15,6 +15,7 @@ import {
 import { roleSettings } from "./roles";
 import { effectiveRole, roleDefinitions } from "../shared/roles";
 import { materialLimits } from "../shared/materials";
+import { builtinWorkflowTemplates } from "../shared/workflows";
 import {
   resolveDataDir,
   initializeDirectories,
@@ -32,6 +33,9 @@ import type {
   DocumentNode,
   RoleId,
   RoleSettings,
+  BlueprintSection,
+  WorkflowRun,
+  WorkflowTemplate,
 } from "../shared/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -68,6 +72,11 @@ const roleIdSchema = z.enum([
   "prompt",
   "revise",
   "organize",
+  "brainstorm",
+  "scene",
+  "dialogue",
+  "pacing",
+  "arc",
   "material",
 ]);
 const sourceDocumentSchema = z.object({
@@ -142,11 +151,17 @@ const taskSchema = z.object({
     "prompt",
     "revise",
     "organize",
+    "brainstorm",
+    "scene",
+    "dialogue",
+    "pacing",
+    "arc",
   ]),
   projectId: idSchema,
   chapterId: idSchema.optional(),
   instruction: longText,
   selection: longText.optional(),
+  workflowContext: z.string().max(80_000).optional(),
 });
 function assertIdle() {
   if (jobs.size) throw new Error("请先停止或等待当前生成任务完成。");
@@ -182,10 +197,22 @@ const handlers: Record<
           "prompt",
           "revise",
           "organize",
+          "brainstorm",
+          "scene",
+          "dialogue",
+          "pacing",
+          "arc",
         ]),
         instruction: longText,
         output: z.string().max(1_000_000),
         chapterId: z.string().max(40),
+        memoryRecords: z.array(z.object({ kind: memoryKindSchema, content: z.string().max(3000) })).max(24).nullable().optional(),
+        memoryRevisionId: idSchema.or(z.literal("")).optional(),
+        outputSelection: z.object({
+          text: z.string().max(500_000),
+          from: z.number().int().min(0),
+          to: z.number().int().min(0),
+        }).nullable().optional(),
       })
       .parse(p);
     repo.getProject(v.projectId);
@@ -215,12 +242,86 @@ const handlers: Record<
         world: longText.optional(),
         style: longText.optional(),
         outline: longText.optional(),
+        blueprintSections: z.array(z.object({
+          id: z.string().min(1).max(80),
+          title: shortText.trim().min(1),
+          content: longText,
+        })).max(50).optional(),
+        blueprintCandidates: z.array(z.object({
+          id: idSchema,
+          title: shortText.trim().min(1),
+          content: z.string().max(1_000_000),
+          source: z.enum(["chapter", "outline", "adjust", "check", "notes", "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc"]),
+          createdAt: z.string().max(40),
+        })).max(100).optional(),
         archived: z.boolean().optional(),
       })
       .parse(p);
     return repo.updateProject(id, patch);
   },
+  "project:delete": async (p) => {
+    const filenames = repo.deleteArchivedProject(idSchema.parse(p));
+    await Promise.all(filenames.map((filename) => unlink(join(dataDir, "assets", filename)).catch(() => undefined)));
+    return true;
+  },
+  "workflow:templates:get": () => [
+    ...builtinWorkflowTemplates,
+    ...repo.listWorkflowTemplates(),
+  ],
+  "workflow:templates:save": (p) => {
+    const templates = z.array(z.object({
+      id: z.string().min(1).max(100),
+      name: shortText.trim().min(1),
+      description: z.string().max(2000),
+      builtin: z.boolean().optional(),
+      steps: z.array(z.object({
+        id: z.string().min(1).max(100),
+        kind: z.enum(["chapter", "outline", "adjust", "check", "notes", "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc"]),
+        title: shortText.trim().min(1),
+        instruction: longText,
+      })).min(1).max(20),
+    })).max(100).parse(p) as WorkflowTemplate[];
+    return repo.saveWorkflowTemplates(templates.filter((template) => !template.builtin));
+  },
+  "workflow:runs:get": (p) => repo.listWorkflowRuns(idSchema.parse(p)),
+  "workflow:run:save": (p) => {
+    const run = z.object({
+      id: idSchema,
+      projectId: idSchema,
+      templateId: z.string().max(100),
+      templateName: shortText,
+      chapterId: z.string().max(40),
+      steps: z.array(z.object({
+        id: z.string().max(100),
+        kind: z.enum(["chapter", "outline", "adjust", "check", "notes", "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc"]),
+        title: shortText,
+        instruction: longText,
+      })).min(1).max(20),
+      results: z.array(z.object({
+        stepId: z.string().max(100),
+        status: z.enum(["pending", "approved", "skipped"]),
+        output: z.string().max(1_000_000),
+        updatedAt: z.string().max(40),
+        memoryRecords: z.array(z.object({ kind: memoryKindSchema, content: z.string().max(3000) })).max(24).optional(),
+        memoryRevisionId: idSchema.optional(),
+        applied: z.boolean().optional(),
+        outputSelection: z.object({
+          text: z.string().max(500_000),
+          from: z.number().int().min(0),
+          to: z.number().int().min(0),
+        }).nullable().optional(),
+      })).max(20),
+      currentStep: z.number().int().min(0).max(20),
+      createdAt: z.string().max(40),
+      updatedAt: z.string().max(40),
+    }).parse(p) as WorkflowRun;
+    return repo.saveWorkflowRun(run);
+  },
   "chapter:create": (p) => repo.createChapter(idSchema.parse(p)),
+  "chapter:delete": (p) => {
+    assertIdle();
+    return repo.deleteChapter(idSchema.parse(p));
+  },
   "chapter:update": (p) => {
     if (JSON.stringify(p).length > 2_000_000)
       throw new Error("单章内容过大，请拆分为多个章节。");
@@ -362,6 +463,14 @@ const handlers: Record<
     const v = z.object({ id: idSchema, active: z.boolean() }).parse(p);
     return repo.setMemoryActive(v.id, v.active);
   },
+  "memory:apply-generated": (p) => {
+    const value = z.object({
+      chapterId: idSchema,
+      revisionId: idSchema,
+      records: z.array(z.object({ kind: memoryKindSchema, content: z.string().trim().min(1).max(3000) })).min(1).max(24),
+    }).parse(p);
+    return repo.saveGeneratedMemories(value.chapterId, value.revisionId, value.records);
+  },
   "settings:save": (p) => saveSettings(repo, dataDir, p),
   "settings:models": async (p) => {
     const value = z
@@ -426,16 +535,10 @@ const handlers: Record<
         throw new Error("生成已停止，收到的内容保留在草稿区。");
       if (request.kind === "notes") {
         const records = parseMemories(text);
-        const notesSaved = repo.saveGeneratedMemories(
-          built.chapterId!,
-          built.revisionId!,
-          records,
-        );
         return {
-          text:
-            `已从采用版本整理 ${notesSaved} 条记忆。\n\n` +
-            records.map((r) => `• ${r.content}`).join("\n\n"),
-          notesSaved,
+          text: records.map((r) => `- [${r.kind}] ${r.content}`).join("\n\n"),
+          memoryRecords: records,
+          memoryRevisionId: built.revisionId,
         };
       }
       return { text };

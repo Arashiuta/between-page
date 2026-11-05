@@ -14,6 +14,7 @@ import type {
   DocumentNode,
   CardInput,
   RoleSettings,
+  MemoryKind,
 } from "../../shared/types";
 import { defaultRoleSettings } from "../../shared/roles";
 import { documentToText } from "../../shared/document";
@@ -37,6 +38,8 @@ export const useWorkspace = defineStore("workspace", () => {
     output = ref(""),
     outputKind = ref<TaskKind>("chapter"),
     outputChapterId = ref(""),
+    memoryRecords = ref<{ kind: MemoryKind; content: string }[] | null>(null),
+    memoryRevisionId = ref(""),
     taskError = ref("");
   const selection = ref<{ text: string; from: number; to: number } | null>(
       null,
@@ -192,6 +195,11 @@ export const useWorkspace = defineStore("workspace", () => {
       instruction: instruction.value,
       output: output.value,
       chapterId: outputChapterId.value,
+      memoryRecords: memoryRecords.value,
+      ...(memoryRevisionId.value
+        ? { memoryRevisionId: memoryRevisionId.value }
+        : {}),
+      outputSelection: outputSelection.value,
     });
   }
   async function openProject(id: string) {
@@ -204,12 +212,17 @@ export const useWorkspace = defineStore("workspace", () => {
       instruction: string;
       output: string;
       chapterId: string;
+      memoryRecords?: { kind: MemoryKind; content: string }[] | null;
+      memoryRevisionId?: string;
+      outputSelection?: { text: string; from: number; to: number } | null;
     } | null>("scratch:get", id);
     output.value = saved?.output || "";
     instruction.value = saved?.instruction || "";
     outputKind.value = saved?.kind || "chapter";
     outputChapterId.value = saved?.chapterId || "";
-    outputSelection.value = null;
+    memoryRecords.value = saved?.memoryRecords ?? null;
+    memoryRevisionId.value = saved?.memoryRevisionId || "";
+    outputSelection.value = saved?.outputSelection ?? null;
     taskError.value = "";
   }
   async function refreshProject() {
@@ -236,6 +249,37 @@ export const useWorkspace = defineStore("workspace", () => {
     chapterId.value = created.id;
     selection.value = null;
   }
+  async function deleteChapter(id: string) {
+    const target = detail.value?.chapters.find((item) => item.id === id);
+    if (!target) return;
+    if (busy.value || imageBusy.value)
+      throw new Error("请先停止或等待当前生成任务完成，再删除章节。");
+    await flush();
+    if (busy.value || imageBusy.value)
+      throw new Error("请先停止或等待当前生成任务完成，再删除章节。");
+    const index = detail.value?.chapters.findIndex((item) => item.id === id) ?? 0;
+    const updated = await api<ProjectDetail>("chapter:delete", id);
+    if (detail.value?.project.id !== target.projectId) return;
+    detail.value = updated;
+    if (!updated.chapters.some((item) => item.id === chapterId.value)) {
+      chapterId.value = updated.chapters[Math.min(index, updated.chapters.length - 1)]?.id || "";
+      selection.value = null;
+    }
+    if (outputChapterId.value === id) {
+      output.value = "";
+      outputChapterId.value = "";
+      outputSelection.value = null;
+      memoryRecords.value = null;
+      memoryRevisionId.value = "";
+      taskError.value = "";
+    }
+    images.value = images.value.map((image) => image.chapterId === id
+      ? { ...image, chapterId: null, revisionId: null }
+      : image);
+    const project = projects.value.find((item) => item.id === updated.project.id);
+    if (project) Object.assign(project, updated.project);
+    notify(`已删除「${target.title}」。`);
+  }
   async function adopt() {
     if (!chapter.value) return;
     await flush();
@@ -243,16 +287,24 @@ export const useWorkspace = defineStore("workspace", () => {
     await refreshProject();
     notify("已采用当前章节，可以整理正式记忆了。");
   }
-  async function runTask(kind: TaskKind = taskKind.value) {
+  async function runTask(
+    kind: TaskKind = taskKind.value,
+    options: { instruction?: string; workflowContext?: string; chapterId?: string } = {},
+  ) {
     if (!detail.value || busy.value) return;
     await flush();
     output.value = "";
+    memoryRecords.value = null;
+    memoryRevisionId.value = "";
     taskError.value = "";
     busy.value = true;
     requestId.value = crypto.randomUUID();
     outputKind.value = kind;
-    outputChapterId.value = chapter.value?.id || "";
-    outputSelection.value = selection.value ? { ...selection.value } : null;
+    const targetChapterId = options.chapterId || chapter.value?.id || "";
+    outputChapterId.value = targetChapterId;
+    outputSelection.value = targetChapterId === chapter.value?.id && selection.value
+      ? { ...selection.value }
+      : null;
     const selected = outputSelection.value?.text;
     scratch();
     try {
@@ -260,15 +312,32 @@ export const useWorkspace = defineStore("workspace", () => {
         requestId: requestId.value,
         kind,
         projectId: detail.value.project.id,
-        chapterId: chapter.value?.id,
-        instruction: instruction.value,
+        chapterId: targetChapterId || undefined,
+        instruction: options.instruction ?? instruction.value,
         selection: selected,
+        workflowContext: options.workflowContext,
       });
       requestId.value = "";
       output.value = result.text;
-      if (result.notesSaved) {
-        await refreshProject();
-        notify(`已更新 ${result.notesSaved} 条正式记忆。`);
+      memoryRecords.value = result.memoryRecords ?? null;
+      memoryRevisionId.value = result.memoryRevisionId ?? "";
+      if (["outline", "adjust", "organize", "brainstorm", "pacing", "arc"].includes(kind) && result.text.trim()) {
+        const labels: Partial<Record<TaskKind, string>> = {
+          outline: "故事蓝图候选",
+          adjust: "走向调整候选",
+          organize: "灵感整理候选",
+          brainstorm: "脑暴候选",
+          pacing: "节奏诊断候选",
+          arc: "人物弧线候选",
+        };
+        const candidate = {
+          id: crypto.randomUUID(),
+          title: labels[kind] ?? "创作候选",
+          content: result.text,
+          source: kind,
+          createdAt: new Date().toISOString(),
+        };
+        editProject({ blueprintCandidates: [candidate, ...(detail.value!.project.blueprintCandidates || [])].slice(0, 100) });
       }
     } catch (error) {
       taskError.value = error instanceof Error ? error.message : String(error);
@@ -341,6 +410,8 @@ export const useWorkspace = defineStore("workspace", () => {
     output,
     outputKind,
     outputChapterId,
+    memoryRecords,
+    memoryRevisionId,
     outputSelection,
     taskError,
     selection,
@@ -357,6 +428,7 @@ export const useWorkspace = defineStore("workspace", () => {
     refreshProject,
     switchChapter,
     newChapter,
+    deleteChapter,
     adopt,
     runTask,
     stopTask,

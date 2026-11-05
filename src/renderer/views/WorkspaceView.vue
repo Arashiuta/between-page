@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, computed } from "vue";
+import { ref, watch, computed, h } from "vue";
 import { useRoute } from "vue-router";
-import { NInput, NButton, NModal, NSelect, NPopconfirm } from "naive-ui";
+import { NInput, NButton, NModal, NSelect, NPopconfirm, NDropdown } from "naive-ui";
 import {
   ChevronRight,
   Plus,
@@ -22,15 +22,19 @@ import {
   Archive,
   RotateCcw,
   CheckCheck,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-vue-next";
 import StoryEditor from "../components/StoryEditor.vue";
-import AssistantPanel from "../components/AssistantPanel.vue";
 import CardEditor from "../components/CardEditor.vue";
 import ImagePanel from "../components/ImagePanel.vue";
+import WorkbenchPanel from "../components/WorkbenchPanel.vue";
 import { useWorkspace } from "../stores/workspace";
-import type { Card, Revision, MemoryKind } from "../../shared/types";
+import type { Card, Chapter, Revision, MemoryKind } from "../../shared/types";
 import { memoryLabels } from "../../shared/types";
 import { wordCount } from "../../shared/document";
+import { applyBlueprintContent } from "../../shared/blueprint";
 const store = useWorkspace(),
   route = useRoute(),
   tab = ref("text"),
@@ -47,6 +51,59 @@ const memoryModal = ref(false),
   showRetired = ref(false),
   imagePrompt = ref(""),
   confirmApply = ref<null | "replace" | "outline">(null);
+const importKind = ref<"all" | "character" | "world">("all");
+const chapterMenu = ref({ id: "", x: 0, y: 0, show: false });
+const chapterToDelete = ref<Pick<Chapter, "id" | "title" | "acceptedRevisionId"> | null>(null);
+const deletingChapter = ref(false);
+const chapterMenuOptions = computed(() => [{
+  key: "delete",
+  label: "删除章节",
+  icon: () => h(Trash2, { size: 15 }),
+  props: { style: { color: "#b91c1c" } },
+  disabled: store.busy || store.imageBusy || deletingChapter.value,
+}]);
+function openChapterMenu(event: MouseEvent, chapter: Chapter) {
+  chapterMenu.value = { id: chapter.id, x: event.clientX, y: event.clientY, show: true };
+}
+function selectChapterMenu(key: string) {
+  const chapter = store.detail?.chapters.find((item) => item.id === chapterMenu.value.id);
+  chapterMenu.value.show = false;
+  if (key === "delete" && chapter)
+    chapterToDelete.value = { id: chapter.id, title: chapter.title, acceptedRevisionId: chapter.acceptedRevisionId };
+}
+async function confirmDeleteChapter() {
+  const target = chapterToDelete.value;
+  if (!target || deletingChapter.value) return false;
+  deletingChapter.value = true;
+  const deleted = await store.safe(async () => {
+    await store.deleteChapter(target.id);
+    return true;
+  });
+  deletingChapter.value = false;
+  if (deleted) chapterToDelete.value = null;
+  return false;
+}
+const importOptions = [
+  { value: "all", label: "全部" },
+  { value: "character", label: "OC" },
+  { value: "world", label: "世界观" },
+] as const;
+const candidateTargets = ref<Record<string, string>>({});
+const candidatePreview = ref<{ candidateId: string; sectionId: string } | null>(null);
+const candidatePreviewData = computed(() => {
+  if (!candidatePreview.value || !store.detail) return null;
+  return {
+    candidate: store.detail.project.blueprintCandidates.find((item) => item.id === candidatePreview.value!.candidateId) || null,
+    section: store.detail.project.blueprintSections.find((item) => item.id === candidatePreview.value!.sectionId) || null,
+  };
+});
+const importCards = computed(() =>
+  store.cards.filter(
+    (card) =>
+      card.kind !== "inspiration" &&
+      (importKind.value === "all" || card.kind === importKind.value),
+  ),
+);
 const tabs = [
   { key: "text", label: "章节正文", icon: FileText },
   { key: "outline", label: "故事蓝图", icon: Map },
@@ -58,9 +115,12 @@ const filteredMemories = computed(
   () =>
     store.detail?.memories.filter((m) => showRetired.value || m.active) || [],
 );
+watch(tab, () => { chapterMenu.value.show = false; });
 watch(
   () => route.params.id,
   async (id) => {
+    chapterMenu.value.show = false;
+    chapterToDelete.value = null;
     loading.value = true;
     await store.safe(() => store.openProject(String(id)));
     tab.value = "text";
@@ -114,6 +174,35 @@ async function addMemory() {
     store.notify("作者记录已保存。");
   });
 }
+function applyCandidate(id: string, sectionId: string, replace = false, confirmed = false) {
+  const project = store.detail!.project;
+  const candidate = project.blueprintCandidates.find((item) => item.id === id);
+  const section = project.blueprintSections.find((item) => item.id === sectionId);
+  if (!candidate || !section) return;
+  if (replace && section.content.trim() && !confirmed) return;
+  store.editProject({
+    blueprintSections: applyBlueprintContent(project.blueprintSections, sectionId, candidate.content, replace ? "replace" : "append"),
+  });
+  store.notify(replace ? `已替换「${section.title}」分区。` : `已追加到「${section.title}」分区。`);
+}
+function confirmCandidateReplacement() {
+  const preview = candidatePreview.value;
+  if (!preview) return;
+  applyCandidate(preview.candidateId, preview.sectionId, true, true);
+  candidatePreview.value = null;
+}
+function moveBlueprintSection(index: number, direction: -1 | 1) {
+  const sections = [...store.detail!.project.blueprintSections];
+  const target = index + direction;
+  if (target < 0 || target >= sections.length) return;
+  [sections[index], sections[target]] = [sections[target], sections[index]];
+  store.editProject({ blueprintSections: sections });
+}
+function addBlueprintSection() {
+  const project = store.detail?.project;
+  if (!project) return;
+  store.editProject({ blueprintSections: [...project.blueprintSections, { id: crypto.randomUUID(), title: "新分区", content: "" }] });
+}
 async function apply(
   mode: "replace" | "append" | "outline" | "selection" | "prompt",
   confirmed = false,
@@ -125,11 +214,19 @@ async function apply(
   }
   if (!store.output.trim()) return;
   if (mode === "outline") {
-    if (store.detail!.project.outline.trim() && !confirmed) {
+    const section = store.detail!.project.blueprintSections.find((item) => item.title === "整体蓝图");
+    if (section?.content.trim() && !confirmed) {
       confirmApply.value = "outline";
       return;
     }
-    store.editProject({ outline: store.output });
+    const sections = store.detail!.project.blueprintSections;
+    const target = section || { id: crypto.randomUUID(), title: "整体蓝图", content: "" };
+    store.editProject({
+      outline: "",
+      blueprintSections: section
+        ? sections.map((item) => item.id === target.id ? { ...item, content: store.output } : item)
+        : [...sections, { ...target, content: store.output }],
+    });
     tab.value = "outline";
     store.notify("创作结果已写入可编辑蓝图。");
     return;
@@ -217,7 +314,7 @@ async function viewSource(revisionId: string | null) {
           <Download :size="14" />导出正文
         </button>
       </div>
-      <div class="workspace-tabs">
+    <div class="workspace-tabs" role="tablist" aria-label="故事工作区">
         <button
           v-for="item in tabs"
           :key="item.key"
@@ -231,7 +328,7 @@ async function viewSource(revisionId: string | null) {
     <div class="workspace-body">
       <div class="writing-area">
         <template v-if="tab === 'text'"
-          ><aside class="chapter-list">
+          ><aside class="chapter-list" @scroll="chapterMenu.show = false">
             <div class="chapter-list-heading">
               <span>故事章节</span
               ><button
@@ -250,6 +347,7 @@ async function viewSource(revisionId: string | null) {
                 { active: chapter.id === store.chapterId },
               ]"
               @click="store.safe(() => store.switchChapter(chapter.id))"
+              @contextmenu.prevent="openChapterMenu($event, chapter)"
             >
               <FileText :size="14" />
               <div>
@@ -277,6 +375,17 @@ async function viewSource(revisionId: string | null) {
               字
             </div>
           </aside>
+          <NDropdown
+            trigger="manual"
+            placement="bottom-start"
+            :show="chapterMenu.show"
+            :x="chapterMenu.x"
+            :y="chapterMenu.y"
+            :options="chapterMenuOptions"
+            @select="selectChapterMenu"
+            @clickoutside="chapterMenu.show = false"
+            @update:show="value => { if (!value) chapterMenu.show = false; }"
+          />
           <section v-if="store.chapter" class="chapter-main">
             <div v-if="store.chapter.needsReview" class="review-banner">
               <AlertCircle :size="15" /><span
@@ -371,6 +480,15 @@ async function viewSource(revisionId: string | null) {
                 }}</NButton
               >
             </footer>
+          </section>
+          <section v-else class="chapter-main">
+            <div class="inline-empty">
+              <FileText :size="27" />
+              <p>暂无章节，创建一个章节开始写作。</p>
+              <NButton type="primary" @click="store.safe(store.newChapter)">
+                <template #icon><Plus :size="15" /></template>新增章节
+              </NButton>
+            </div>
           </section></template
         >
         <section
@@ -380,7 +498,7 @@ async function viewSource(revisionId: string | null) {
           <div class="content-heading">
             <div>
               <h2>故事蓝图</h2>
-              <p>这些是可调整的计划，不会自动成为已经发生的事实。</p>
+              <p>蓝图会作为 AI 创作时的参考计划，不会自动成为已经发生的事实；分区是你可自定义的整理栏目。</p>
             </div>
           </div>
           <div class="form-two-columns">
@@ -410,22 +528,40 @@ async function viewSource(revisionId: string | null) {
             type="textarea"
             :autosize="{ minRows: 3, maxRows: 8 }"
             placeholder="想看角色经历什么？有哪些场景、关系或冲突？"
-          /><label class="field-label"
-            >整体蓝图<small>可在右侧规划、调整，再决定是否写入</small></label
-          ><NInput
-            :value="store.detail.project.outline"
-            @update:value="store.editProject({ outline: $event })"
-            type="textarea"
-            :autosize="{ minRows: 12, maxRows: 30 }"
-            placeholder="核心冲突、角色变化、阶段目标、伏笔、近期章节……还没决定的部分可以留空。"
-          /><label class="field-label">故事里的世界</label
+          /><div class="section-toolbar blueprint-toolbar">
+            <label class="field-label">蓝图分区<small>按你的构思自定义名称和顺序，例如主线、角色弧线、伏笔；AI 结果会先进入候选区</small></label>
+            <button class="text-button" @click="addBlueprintSection"><Plus :size="14" />添加分区</button>
+          </div>
+          <article v-for="(section, index) in store.detail.project.blueprintSections" :key="section.id" class="blueprint-section">
+            <div class="blueprint-section-heading">
+              <NInput :value="section.title" placeholder="分区名称" @update:value="value => store.editProject({ blueprintSections: store.detail!.project.blueprintSections.map(item => item.id === section.id ? { ...item, title: value } : item) })" />
+              <button class="icon-button" aria-label="上移分区" :disabled="index === 0" @click="moveBlueprintSection(index, -1)"><ArrowUp :size="14" /></button>
+              <button class="icon-button" aria-label="下移分区" :disabled="index === store.detail.project.blueprintSections.length - 1" @click="moveBlueprintSection(index, 1)"><ArrowDown :size="14" /></button>
+              <button class="icon-button danger-icon" aria-label="删除分区" @click="store.editProject({ blueprintSections: store.detail!.project.blueprintSections.filter(item => item.id !== section.id) })"><Trash2 :size="14" /></button>
+            </div>
+            <NInput :value="section.content" @update:value="value => store.editProject({ blueprintSections: store.detail!.project.blueprintSections.map(item => item.id === section.id ? { ...item, content: value } : item) })" type="textarea" :autosize="{ minRows: 4, maxRows: 18 }" placeholder="记录这一部分的故事计划。尚未确定的内容可以留空或标注为待确认。" />
+          </article>
+          <section class="blueprint-candidates">
+            <div class="section-toolbar"><div><h3>创作候选 <span class="count-tag">{{ store.detail.project.blueprintCandidates.length }}</span></h3><p class="muted small">规划、灵感和诊断结果保存在这里，不会自动覆盖正式蓝图。</p></div></div>
+            <article v-for="candidate in store.detail.project.blueprintCandidates" :key="candidate.id" class="blueprint-candidate">
+              <div class="blueprint-candidate-meta"><strong>{{ candidate.title }}</strong><span>{{ new Date(candidate.createdAt).toLocaleString('zh-CN') }}</span></div>
+              <NInput :value="candidate.content" type="textarea" :autosize="{ minRows: 4, maxRows: 14 }" @update:value="value => store.editProject({ blueprintCandidates: store.detail!.project.blueprintCandidates.map(item => item.id === candidate.id ? { ...item, content: value } : item) })" />
+              <div class="blueprint-candidate-actions">
+                <NSelect v-model:value="candidateTargets[candidate.id]" :options="store.detail.project.blueprintSections.map(section => ({ label: section.title, value: section.id }))" placeholder="选择目标分区" />
+                <NButton :disabled="!candidateTargets[candidate.id]" @click="applyCandidate(candidate.id, candidateTargets[candidate.id], false)">追加</NButton>
+                <NButton type="warning" :disabled="!candidateTargets[candidate.id]" @click="candidatePreview = { candidateId: candidate.id, sectionId: candidateTargets[candidate.id] }">预览替换</NButton>
+              </div>
+            </article>
+            <div v-if="!store.detail.project.blueprintCandidates.length" class="inline-empty"><Map :size="24" /><p>暂时没有候选。可在 AI 工作台规划故事或整理灵感。</p></div>
+          </section>
+          <label class="field-label">故事里的世界</label
           ><NInput
             :value="store.detail.project.world"
             @update:value="store.editProject({ world: $event })"
             type="textarea"
             :autosize="{ minRows: 4, maxRows: 12 }"
-            placeholder="这个故事特有的背景、规则与氛围"
-          /><label class="field-label">写作偏好</label
+            placeholder="记录时代背景、社会规则、地理与整体氛围"
+          /><p class="field-help blueprint-world-help">这里记录本故事的整体世界观，会作为 AI 参考。更细的角色或世界设定可在「世界与人物」中建立资料卡。</p><label class="field-label">写作偏好</label
           ><NInput
             :value="store.detail.project.style"
             @update:value="store.editProject({ style: $event })"
@@ -503,9 +639,12 @@ async function viewSource(revisionId: string | null) {
             <p class="muted small">
               导入后会创建独立副本，不与资料库同步修改。
             </p>
-            <div class="library-chips">
+            <div class="filter-tabs compact-tabs">
+              <button v-for="item in importOptions" :key="item.value" :class="{ active: importKind === item.value }" @click="importKind = item.value">{{ item.label }}</button>
+            </div>
+            <div v-if="importCards.length" class="library-chips">
               <button
-                v-for="card in store.cards"
+                v-for="card in importCards"
                 :key="card.id"
                 @click="
                   store.safe(async () => {
@@ -518,9 +657,10 @@ async function viewSource(revisionId: string | null) {
                   })
                 "
               >
-                <Plus :size="13" />{{ card.name }}
+                <Plus :size="13" /><span class="import-kind-tag">{{ card.kind === 'character' ? 'OC' : '世界观' }}</span>{{ card.name }}
               </button>
             </div>
+            <p v-else class="muted small">此分类暂时没有可导入资料。</p>
           </div>
         </section>
         <section v-else-if="tab === 'memory'" class="tab-content">
@@ -528,7 +668,7 @@ async function viewSource(revisionId: string | null) {
             <div>
               <h2>故事记忆</h2>
               <p>
-                采用章节后，在创作搭档中选择「整理正式记忆」。也可以手动记录。
+                采用章节后，在 AI 工作台运行「记忆整理」，审核结果后再确认写入。也可以手动记录。
               </p>
             </div>
             <button
@@ -548,6 +688,14 @@ async function viewSource(revisionId: string | null) {
               {{ showRetired ? "只看有效记录" : "查看失效记录" }}
             </button>
           </div>
+          <section v-if="store.memoryRecords?.length" class="memory-draft">
+            <div class="memory-meta"><strong>待审核记忆草稿</strong><span>{{ store.memoryRecords.length }} 条 · 来源版本 {{ store.memoryRevisionId.slice(0, 8) }}</span></div>
+            <article v-for="(record, index) in store.memoryRecords" :key="index" class="memory-draft-row">
+              <NSelect v-model:value="record.kind" :options="Object.entries(memoryLabels).map(([value, label]) => ({ value, label }))" @update:value="store.scratch" />
+              <NInput v-model:value="record.content" type="textarea" :autosize="{ minRows: 1, maxRows: 5 }" @update:value="store.scratch" />
+            </article>
+            <NButton type="primary" @click="store.safe(async () => { await store.flush(); await store.api('memory:apply-generated', { chapterId: store.outputChapterId, revisionId: store.memoryRevisionId, records: store.memoryRecords }); await store.refreshProject(); store.memoryRecords = null; store.scratch(); await store.flush(); store.notify('已将审核后的记忆写入故事。'); })">确认写入故事记忆</NButton>
+          </section>
           <div v-if="filteredMemories.length" class="memory-list">
             <article
               v-for="memory in filteredMemories"
@@ -600,12 +748,29 @@ async function viewSource(revisionId: string | null) {
           :initial-prompt="imagePrompt"
         />
       </div>
-      <AssistantPanel @apply="apply" />
+      <WorkbenchPanel v-if="tab === 'text'" @apply="apply" />
     </div>
     <CardEditor
       v-model:show="cardModal"
       :card="editingCard"
       :project-id="store.detail.project.id"
+    />
+    <NModal
+      :show="!!chapterToDelete"
+      preset="dialog"
+      type="error"
+      title="删除章节？"
+      :content="`确定删除「${chapterToDelete?.title || ''}」？本章正文、版本记录及关联记忆将一并删除，插画会保留在故事中。${chapterToDelete?.acceptedRevisionId ? '后续已采用章节将标记为待复核，相关自动记忆将停用。' : ''}此操作无法撤销。`"
+      positive-text="确认删除"
+      negative-text="取消"
+      :positive-button-props="{ type: 'error', loading: deletingChapter, disabled: store.busy || store.imageBusy }"
+      :negative-button-props="{ disabled: deletingChapter }"
+      :mask-closable="!deletingChapter"
+      :close-on-esc="!deletingChapter"
+      :closable="!deletingChapter"
+      @update:show="value => { if (!value && !deletingChapter) chapterToDelete = null; }"
+      @positive-click="confirmDeleteChapter"
+      @negative-click="chapterToDelete = null"
     />
     <NModal
       v-model:show="memoryModal"
@@ -717,5 +882,13 @@ async function viewSource(revisionId: string | null) {
       "
       @negative-click="confirmApply = null"
     />
+    <NModal :show="!!candidatePreview" @update:show="value => { if (!value) candidatePreview = null; }" preset="card" title="替换蓝图分区前预览" class="form-modal blueprint-preview-modal" :style="{ width: '900px' }">
+      <p class="muted small">{{ candidatePreviewData?.section?.title }} · 请对照当前内容与候选内容</p>
+      <div class="blueprint-preview-columns">
+        <div><strong>当前分区</strong><NInput :value="candidatePreviewData?.section?.content || ''" type="textarea" :autosize="{ minRows: 12, maxRows: 24 }" readonly /></div>
+        <div><strong>候选内容</strong><NInput :value="candidatePreviewData?.candidate?.content || ''" type="textarea" :autosize="{ minRows: 12, maxRows: 24 }" readonly /></div>
+      </div>
+      <template #footer><div class="modal-footer"><NButton @click="candidatePreview = null">取消</NButton><NButton type="warning" @click="confirmCandidateReplacement">确认替换分区</NButton></div></template>
+    </NModal>
   </div>
 </template>

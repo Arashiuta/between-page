@@ -10,7 +10,59 @@ export type TaskKind =
   | "notes"
   | "prompt"
   | "revise"
-  | "organize";
+  | "organize"
+  | "brainstorm"
+  | "scene"
+  | "dialogue"
+  | "pacing"
+  | "arc";
+export interface BlueprintSection {
+  id: string;
+  title: string;
+  content: string;
+}
+export interface BlueprintCandidate {
+  id: string;
+  title: string;
+  content: string;
+  source: TaskKind;
+  createdAt: string;
+}
+export interface WorkflowStep {
+  id: string;
+  kind: TaskKind;
+  title: string;
+  instruction: string;
+}
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  steps: WorkflowStep[];
+  builtin?: boolean;
+}
+export interface WorkflowStepResult {
+  stepId: string;
+  status: "pending" | "approved" | "skipped";
+  output: string;
+  updatedAt: string;
+  memoryRecords?: { kind: MemoryKind; content: string }[];
+  memoryRevisionId?: string;
+  applied?: boolean;
+  outputSelection?: { text: string; from: number; to: number } | null;
+}
+export interface WorkflowRun {
+  id: string;
+  projectId: string;
+  templateId: string;
+  templateName: string;
+  chapterId: string;
+  steps: WorkflowStep[];
+  results: WorkflowStepResult[];
+  currentStep: number;
+  createdAt: string;
+  updatedAt: string;
+}
 export interface DocumentNode {
   type: string;
   text?: string;
@@ -27,6 +79,8 @@ export interface Project {
   world: string;
   style: string;
   outline: string;
+  blueprintSections: BlueprintSection[];
+  blueprintCandidates: BlueprintCandidate[];
   color: string;
   createdAt: string;
   updatedAt: string;
@@ -180,10 +234,13 @@ export interface TaskRequest {
   chapterId?: string;
   instruction: string;
   selection?: string;
+  workflowContext?: string;
 }
 export interface TaskResult {
   text: string;
   notesSaved?: number;
+  memoryRecords?: { kind: MemoryKind; content: string }[];
+  memoryRevisionId?: string;
 }
 export interface ImageRequest {
   projectId: string;

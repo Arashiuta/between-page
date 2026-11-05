@@ -96,7 +96,7 @@ export function buildTask(
       chapter?.plan,
       request.selection,
       chapter?.content.slice(-4000),
-      detail.project.outline,
+      ...detail.project.blueprintSections.map((section) => `${section.title}\n${section.content}`),
     ]
       .filter(Boolean)
       .join("\n"),
@@ -107,7 +107,9 @@ export function buildTask(
     `【作者的故事想法】\n${clip(project.premise, 6000)}`,
     `【世界观】\n${clip(project.world, 8000)}\n【文风偏好】\n${clip(project.style, 3000)}`,
     `【角色与资料】\n${materials.text || "尚无资料。"}`,
-    `【计划，仅为未来意图，并非已经发生的事实】\n${clip(project.outline, 10000)}`,
+    `【蓝图，仅为未来意图，并非已经发生的事实】\n${clip([
+      ...project.blueprintSections.map((section) => `## ${section.title}\n${section.content}`),
+    ].filter(Boolean).join("\n\n"), 16000)}`,
     `【有效记忆，有来源】\n${memoryText || "尚无有效记录。"}`,
     `【近期已采用正文】\n${recent || "这是故事的开始。"}`,
     chapter
@@ -117,6 +119,7 @@ export function buildTask(
       ? `【作者选中的片段】\n${clip(request.selection, 12000)}`
       : "",
     source,
+    request.workflowContext ? `【作者已确认供本工作流后续参考的步骤结果；这些内容仍是草稿，不能当成已写入故事的事实】\n${clip(request.workflowContext, 30000)}` : "",
     `【本次作者要求】\n${request.instruction.trim() || "请按当前资料完成任务。"}`,
   ]
     .filter(Boolean)

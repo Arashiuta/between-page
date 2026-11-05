@@ -36,6 +36,8 @@ function setup() {
       world: "",
       style: "",
       outline: "",
+      blueprintSections: [],
+      blueprintCandidates: [],
       color: "sage",
       createdAt: "",
       updatedAt: "",
@@ -203,6 +205,14 @@ describe("自动保存队列", () => {
         document: textToDocument("不会丢失的文字"),
       }),
     );
+  });
+  it("没有记忆来源时保存草稿不会发送空的版本 ID", async () => {
+    const store = setup();
+    invoke.mockResolvedValue(true);
+    store.scratch();
+    await store.flush();
+    expect(invoke).toHaveBeenCalledWith("scratch:save", expect.any(Object));
+    expect(invoke.mock.calls[0][1]).not.toHaveProperty("memoryRevisionId");
   });
   it("请求进行中继续编辑，新内容会排队保存且不会被旧响应覆盖", async () => {
     const store = setup();

@@ -20,7 +20,10 @@ import type {
   ProjectDetail,
   Revision,
   DocumentNode,
+  WorkflowRun,
+  WorkflowTemplate,
 } from "../shared/types";
+import { normalizeProject, defaultBlueprintSections } from "../shared/blueprint";
 
 const now = () => new Date().toISOString();
 class SQLiteConnection {
@@ -94,6 +97,15 @@ export class StoryRepository {
       CREATE INDEX IF NOT EXISTS idx_revisions_chapter ON revisions(chapter_id);
       PRAGMA user_version = 1;
     `);
+    const projects = this.db
+      .prepare("SELECT id, payload FROM projects")
+      .all() as { id: string; payload: string }[];
+    const migrate = this.db.prepare("UPDATE projects SET payload = ? WHERE id = ?");
+    for (const row of projects) {
+      const value = JSON.parse(row.payload) as Project;
+      if (!Array.isArray(value.blueprintSections) || value.outline?.trim())
+        migrate.run(JSON.stringify(normalizeProject(value)), row.id);
+    }
   }
   private all<T>(sql: string, ...args: unknown[]): T[] {
     return (this.db.prepare(sql).all(...args) as { payload: string }[]).map(
@@ -113,9 +125,9 @@ export class StoryRepository {
       .run(JSON.stringify(value), value.id);
   }
   listProjects(): Project[] {
-    return this.all<Project>("SELECT payload FROM projects").sort((a, b) =>
-      b.updatedAt.localeCompare(a.updatedAt),
-    );
+    return this.all<Project>("SELECT payload FROM projects")
+      .map(normalizeProject)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
   listCards(): Card[] {
     return this.all<Card>("SELECT payload FROM cards WHERE project_id IS NULL")
@@ -128,7 +140,7 @@ export class StoryRepository {
     );
   }
   getProject(id: string) {
-    return this.one<Project>("projects", id);
+    return normalizeProject(this.one<Project>("projects", id));
   }
   getChapter(id: string) {
     return this.one<Chapter>("chapters", id);
@@ -180,6 +192,8 @@ export class StoryRepository {
         world: "",
         style: "",
         outline: "",
+        blueprintSections: defaultBlueprintSections(),
+        blueprintCandidates: [],
         color: ["sage", "sand", "rose", "slate"][
           this.listProjects().length % 4
         ],
@@ -212,13 +226,81 @@ export class StoryRepository {
         | "world"
         | "style"
         | "outline"
+        | "blueprintSections"
+        | "blueprintCandidates"
         | "archived"
       >
     >,
   ) {
-    const project = { ...this.getProject(id), ...patch, updatedAt: now() };
+    const project = normalizeProject({ ...this.getProject(id), ...patch, updatedAt: now() });
     this.write("projects", project);
     return project;
+  }
+  deleteArchivedProject(id: string): string[] {
+    return this.db.transaction(() => {
+      const project = this.getProject(id);
+      if (!project.archived) throw new Error("请先归档故事，再彻底删除。");
+      const detail = this.getDetail(id);
+      const referenced = new Set<string>();
+      for (const card of this.all<Card>(
+        "SELECT payload FROM cards WHERE project_id IS NULL OR project_id != ?",
+        id,
+      ))
+        for (const imageId of card.referenceIds) referenced.add(imageId);
+      for (const image of this.all<ImageAsset>(
+        "SELECT payload FROM images WHERE project_id IS NULL OR project_id != ?",
+        id,
+      )) {
+        referenced.add(image.id);
+        for (const imageId of image.referenceIds) referenced.add(imageId);
+      }
+      const removeFiles: string[] = [];
+      for (const image of detail.images) {
+        if (referenced.has(image.id)) {
+          const preserved: ImageAsset = {
+            ...image,
+            projectId: null,
+            chapterId: null,
+            revisionId: null,
+          };
+          this.db
+            .prepare("UPDATE images SET project_id = NULL, payload = ? WHERE id = ?")
+            .run(JSON.stringify(preserved), image.id);
+        } else {
+          removeFiles.push(image.filename);
+          this.db.prepare("DELETE FROM images WHERE id = ?").run(image.id);
+        }
+      }
+      this.db.prepare("DELETE FROM memories WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM revisions WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM chapters WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM cards WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+      this.db.prepare("DELETE FROM settings WHERE key = ?").run("scratch." + id);
+      this.db
+        .prepare("DELETE FROM settings WHERE key LIKE ?")
+        .run("workflow.run." + id + ".%");
+      return removeFiles;
+    })();
+  }
+  listWorkflowTemplates(): WorkflowTemplate[] {
+    return this.getSetting<WorkflowTemplate[]>("workflow.templates", []);
+  }
+  saveWorkflowTemplates(templates: WorkflowTemplate[]): WorkflowTemplate[] {
+    this.setSetting("workflow.templates", templates);
+    return templates;
+  }
+  listWorkflowRuns(projectId: string): WorkflowRun[] {
+    this.getProject(projectId);
+    return this.all<WorkflowRun>(
+      "SELECT value AS payload FROM settings WHERE key LIKE ?",
+      "workflow.run." + projectId + ".%",
+    ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+  saveWorkflowRun(run: WorkflowRun): WorkflowRun {
+    this.getProject(run.projectId);
+    this.setSetting(`workflow.run.${run.projectId}.${run.id}`, run);
+    return run;
   }
   private touch(projectId: string) {
     this.updateProject(projectId, {});
@@ -249,6 +331,54 @@ export class StoryRepository {
       .run(chapter.id, projectId, position, JSON.stringify(chapter));
     this.touch(projectId);
     return chapter;
+  }
+  deleteChapter(id: string): ProjectDetail {
+    return this.db.transaction(() => {
+      const chapter = this.getChapter(id);
+      const detail = this.getDetail(chapter.projectId);
+      const revisionIds = new Set(this.listRevisions(id).map((revision) => revision.id));
+      const laterIds = new Set(
+        detail.chapters.filter((item) => item.position > chapter.position).map((item) => item.id),
+      );
+
+      // Keep illustrations in the story, without references to deleted sources.
+      for (const image of this.listImages()) {
+        if (image.chapterId === id || (image.revisionId && revisionIds.has(image.revisionId))) {
+          const preserved: ImageAsset = { ...image, chapterId: null, revisionId: null };
+          this.write("images", preserved);
+        }
+      }
+      for (const memory of detail.memories) {
+        if (memory.chapterId === id || (memory.revisionId && revisionIds.has(memory.revisionId))) {
+          this.db.prepare("DELETE FROM memories WHERE id = ?").run(memory.id);
+        } else if (chapter.acceptedRevisionId && !memory.manual && memory.chapterId && laterIds.has(memory.chapterId)) {
+          this.setMemoryActive(memory.id, false);
+        }
+      }
+      this.db.prepare("DELETE FROM revisions WHERE chapter_id = ?").run(id);
+      this.db.prepare("DELETE FROM chapters WHERE id = ?").run(id);
+
+      const remaining = detail.chapters.filter((item) => item.id !== id);
+      for (const [index, item] of remaining.entries()) {
+        const updated = {
+          ...item,
+          position: index + 1,
+          needsReview: item.needsReview || !!(chapter.acceptedRevisionId && laterIds.has(item.id) && item.acceptedRevisionId),
+        };
+        this.db.prepare("UPDATE chapters SET position = ?, payload = ? WHERE id = ?")
+          .run(updated.position, JSON.stringify(updated), updated.id);
+      }
+      const scratchKey = "scratch." + chapter.projectId;
+      if (this.getSetting<{ chapterId?: string } | null>(scratchKey, null)?.chapterId === id)
+        this.db.prepare("DELETE FROM settings WHERE key = ?").run(scratchKey);
+      for (const run of this.listWorkflowRuns(chapter.projectId)) {
+        if (run.chapterId === id)
+          this.db.prepare("DELETE FROM settings WHERE key = ?")
+            .run(`workflow.run.${run.projectId}.${run.id}`);
+      }
+      this.touch(chapter.projectId);
+      return this.getDetail(chapter.projectId);
+    })();
   }
   updateChapter(
     id: string,
