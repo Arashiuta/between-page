@@ -20,6 +20,7 @@ import {
   Bot,
 } from "lucide-vue-next";
 import { useWorkspace } from "./stores/workspace";
+import brandMark from "./assets/brand-mark.svg";
 const store = useWorkspace(),
   route = useRoute(),
   router = useRouter();
@@ -111,7 +112,7 @@ async function create() {
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-icon"><BookOpen :size="23" /></div>
+          <div class="brand-icon"><img :src="brandMark" alt="" /></div>
           <div><strong>页间</strong><span>BETWEEN PAGES</span></div>
         </div>
         <button class="new-story-button" @click="showCreate">

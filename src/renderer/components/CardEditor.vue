@@ -10,6 +10,7 @@ import {
   NTabPane,
   NCollapse,
   NCollapseItem,
+  NImageGroup,
 } from "naive-ui";
 import { ImagePlus, X, FileUp, Plus, Sparkles, Square } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
@@ -44,6 +45,11 @@ const instruction = ref(""),
   append = ref(true),
   requestId = ref("");
 const form = ref<CardInput>(empty());
+const previewing = ref(false),
+  previewIndex = ref(0);
+const referenceUrls = computed(() =>
+  form.value.referenceIds.map((id) => store.imageUrl(id)),
+);
 const busy = computed(
   () => saving.value || importing.value || organizing.value,
 );
@@ -66,6 +72,8 @@ function empty(): CardInput {
 watch(
   () => props.show,
   (value) => {
+    previewing.value = false;
+    previewIndex.value = 0;
     if (!value) return;
     form.value = props.card
       ? JSON.parse(JSON.stringify(props.card))
@@ -216,7 +224,7 @@ function sourceNames(ids: string[]) {
     class="form-modal material-modal"
     :mask-closable="!busy"
     :closable="!busy"
-    :close-on-esc="!busy"
+    :close-on-esc="!busy && !previewing"
   >
     <div class="material-editor-scroll">
       <div class="form-two-columns">
@@ -334,15 +342,32 @@ function sourceNames(ids: string[]) {
             分区标题和数量可自行决定，也可以只保留原始文档，不使用 AI 整理。
           </p>
           <div class="section-toolbar compact">
-            <label class="field-label">参考图片</label
+            <label class="field-label"
+              >参考图片<small v-if="form.referenceIds.length"
+                >点击图片放大预览</small
+              ></label
             ><NButton text :disabled="busy" @click="importImages"
               ><template #icon><ImagePlus :size="15" /></template
               >添加图片</NButton
             >
           </div>
           <div v-if="form.referenceIds.length" class="reference-thumbnails">
-            <div v-for="id in form.referenceIds" :key="id">
-              <img :src="store.imageUrl(id)" alt="参考图片" /><button
+            <div v-for="(id, index) in form.referenceIds" :key="id">
+              <button
+                type="button"
+                class="reference-preview"
+                :aria-label="`放大预览参考图片 ${index + 1}`"
+                title="点击放大预览"
+                @click="
+                  previewIndex = index;
+                  previewing = true;
+                "
+              >
+                <img :src="store.imageUrl(id)" :alt="`参考图片 ${index + 1}`" />
+              </button>
+              <button
+                type="button"
+                class="reference-remove"
                 :disabled="busy"
                 aria-label="取消关联图片"
                 @click="
@@ -488,4 +513,10 @@ function sourceNames(ids: string[]) {
       </div></template
     >
   </NModal>
+  <NImageGroup
+    v-if="show && form.referenceIds.length"
+    v-model:show="previewing"
+    v-model:current="previewIndex"
+    :src-list="referenceUrls"
+  />
 </template>

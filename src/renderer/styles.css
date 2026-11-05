@@ -109,12 +109,13 @@ input {
 .brand-icon {
   width: 41px;
   height: 43px;
-  border-radius: 12px;
-  background: #2563eb;
-  color: #ffffff;
   display: grid;
   place-items: center;
-  box-shadow: 0 3px 7px #315d4e14;
+}
+.brand-icon img {
+  display: block;
+  width: 41px;
+  height: 41px;
 }
 .brand strong {
   display: block;
@@ -912,7 +913,19 @@ input {
   border-radius: 6px;
   border: 1px solid var(--border);
 }
-.reference-thumbnails button {
+.reference-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border-radius: 6px;
+  cursor: zoom-in;
+}
+.reference-preview:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.reference-thumbnails .reference-remove {
   position: absolute;
   right: -4px;
   top: -4px;
