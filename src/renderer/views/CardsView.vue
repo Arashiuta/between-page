@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, h, watch } from "vue";
+import { NDropdown, NModal } from "naive-ui";
 import {
   Plus,
   Users,
@@ -7,6 +8,7 @@ import {
   Lightbulb,
   ArrowUpRight,
   Feather,
+  Trash2,
 } from "lucide-vue-next";
 import CardEditor from "../components/CardEditor.vue";
 import { useWorkspace } from "../stores/workspace";
@@ -15,13 +17,64 @@ const store = useWorkspace(),
   filter = ref<CardKind>("character"),
   show = ref(false),
   editing = ref<Card | null>(null);
+const cardMenu = ref({ id: "", x: 0, y: 0, show: false });
+const cardToDelete = ref<Pick<Card, "id" | "name"> | null>(null);
+const deleting = ref(false);
+const cardMenuOptions = computed(() => [
+  {
+    key: "delete",
+    label: "删除资料",
+    icon: () => h(Trash2, { size: 15 }),
+    props: { style: { color: "#b91c1c" } },
+    disabled: deleting.value,
+  },
+]);
 const filtered = computed(() =>
   store.cards.filter((c) => c.kind === filter.value),
 );
 function open(card: Card | null) {
+  cardMenu.value.show = false;
   editing.value = card;
   show.value = true;
 }
+function openCardMenu(event: MouseEvent, card: Card) {
+  cardMenu.value = {
+    id: card.id,
+    x: event.clientX,
+    y: event.clientY,
+    show: true,
+  };
+}
+function requestDelete(card: Card) {
+  cardMenu.value.show = false;
+  cardToDelete.value = { id: card.id, name: card.name };
+}
+function selectCardMenu(key: string) {
+  const card = store.cards.find((item) => item.id === cardMenu.value.id);
+  cardMenu.value.show = false;
+  if (key === "delete" && card) requestDelete(card);
+}
+async function confirmDelete() {
+  const target = cardToDelete.value;
+  if (!target || deleting.value) return false;
+  deleting.value = true;
+  const deleted = await store.safe(async () => {
+    await store.deleteCard(target.id);
+    return true;
+  });
+  deleting.value = false;
+  if (deleted) {
+    cardToDelete.value = null;
+    if (editing.value?.id === target.id) {
+      editing.value = null;
+      show.value = false;
+    }
+  }
+  return false;
+}
+watch(filter, () => {
+  cardMenu.value.show = false;
+});
 </script>
 <template>
   <main class="page">
@@ -61,6 +114,7 @@ function open(card: Card | null) {
         :key="card.id"
         class="asset-card"
         @click="open(card)"
+        @contextmenu.prevent="openCardMenu($event, card)"
       >
         <div v-if="card.referenceIds.length" class="asset-card-image">
           <img :src="store.imageUrl(card.referenceIds[0])" :alt="card.name" />
@@ -87,11 +141,21 @@ function open(card: Card | null) {
                 : "暂无描述")
             }}
           </p>
-          <span>{{
-            card.referenceIds.length
-              ? card.referenceIds.length + " 张参考图"
-              : "独立资料 · 可用于多个故事"
-          }}</span>
+          <div class="asset-card-footer">
+            <span>{{
+              card.referenceIds.length
+                ? card.referenceIds.length + " 张参考图"
+                : "独立资料 · 可用于多个故事"
+            }}</span>
+            <button
+              class="text-button asset-card-delete"
+              :aria-label="`删除创作资料「${card.name}」`"
+              :disabled="deleting"
+              @click.stop="requestDelete(card)"
+            >
+              <Trash2 :size="14" />删除
+            </button>
+          </div>
         </div>
       </article>
     </div>
@@ -123,6 +187,42 @@ function open(card: Card | null) {
       </button>
     </div>
     <p class="page-footer">每个故事使用独立的资料副本，修改互不影响。</p>
+    <NDropdown
+      trigger="manual"
+      placement="bottom-start"
+      :show="cardMenu.show"
+      :x="cardMenu.x"
+      :y="cardMenu.y"
+      :options="cardMenuOptions"
+      @select="selectCardMenu"
+      @clickoutside="cardMenu.show = false"
+      @update:show="
+        (value) => {
+          if (!value) cardMenu.show = false;
+        }
+      "
+    />
+    <NModal
+      :show="!!cardToDelete"
+      preset="dialog"
+      type="error"
+      title="删除创作资料？"
+      :content="`确定删除「${cardToDelete?.name || ''}」？资料内容、分区和原始文档将一并删除。已复制到故事中的资料副本和参考图片会保留。此操作无法撤销。`"
+      positive-text="确认删除"
+      negative-text="取消"
+      :positive-button-props="{ type: 'error', loading: deleting }"
+      :negative-button-props="{ disabled: deleting }"
+      :mask-closable="!deleting"
+      :close-on-esc="!deleting"
+      :closable="!deleting"
+      @update:show="
+        (value) => {
+          if (!value && !deleting) cardToDelete = null;
+        }
+      "
+      @positive-click="confirmDelete"
+      @negative-click="cardToDelete = null"
+    />
     <CardEditor
       v-model:show="show"
       :card="editing"

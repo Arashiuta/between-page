@@ -361,6 +361,13 @@ export const useWorkspace = defineStore("workspace", () => {
     if (detail.value) await refreshProject();
     return result;
   }
+  async function deleteCard(id: string) {
+    const deleted = await api<Card>("card:delete", id);
+    cards.value = cards.value.filter((card) => card.id !== deleted.id);
+    if (detail.value)
+      detail.value.cards = detail.value.cards.filter((card) => card.id !== deleted.id);
+    notify(`已删除资料「${deleted.name}」。`);
+  }
   async function createProject(value: {
     title: string;
     premise: string;
@@ -434,6 +441,7 @@ export const useWorkspace = defineStore("workspace", () => {
     stopTask,
     setModel,
     saveCard,
+    deleteCard,
     createProject,
     imageUrl,
     initializeListeners,

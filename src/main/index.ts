@@ -354,6 +354,7 @@ const handlers: Record<
     for (const ref of card.referenceIds) repo.getImage(ref);
     return repo.saveCard(card);
   },
+  "card:delete": (p) => repo.deleteCard(idSchema.parse(p)),
   "card:import": async () => {
     const result = await dialog.showOpenDialog({
       title: "导入设定文档",

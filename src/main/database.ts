@@ -498,6 +498,11 @@ export class StoryRepository {
     const source = this.getCard(id);
     return this.saveCard({ ...source, id: undefined, projectId });
   }
+  deleteCard(id: string): Card {
+    const card = this.getCard(id);
+    this.db.prepare("DELETE FROM cards WHERE id = ?").run(id);
+    return card;
+  }
   addMemory(projectId: string, kind: MemoryKind, content: string): Memory {
     this.getProject(projectId);
     const memory: Memory = {
