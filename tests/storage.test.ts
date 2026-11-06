@@ -16,6 +16,7 @@ import {
   readKey,
   saveKey,
   saveSettings,
+  saveSoftwareSettings,
   settings,
 } from "../src/main/storage";
 const directories: string[] = [];
@@ -31,6 +32,41 @@ afterEach(async () => {
   }
 });
 describe("文件保存与恢复", () => {
+  it("旧数据默认每次询问，关闭偏好独立持久化且不被模型设置覆盖", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "storybook-test-"));
+    directories.push(dir);
+    const filename = join(dir, "storybook.sqlite");
+    let repo = new StoryRepository(filename);
+    try {
+      const oldForm = settings(repo, dir);
+      expect(oldForm.software.closeAction).toBe("ask");
+      saveSoftwareSettings(repo, { closeAction: "minimize" });
+      saveSettings(repo, dir, oldForm);
+      repo.close();
+      repo = new StoryRepository(filename);
+      expect(settings(repo, dir).software.closeAction).toBe("minimize");
+      saveSoftwareSettings(repo, { closeAction: "quit" });
+      expect(settings(repo, dir).software.closeAction).toBe("quit");
+      saveSoftwareSettings(repo, { closeAction: "ask" });
+      expect(settings(repo, dir).software.closeAction).toBe("ask");
+    } finally {
+      repo.close();
+    }
+  });
+  it("拒绝无效关闭动作，损坏的旧偏好回退到每次询问", () => {
+    const repo = new StoryRepository(":memory:");
+    try {
+      saveSoftwareSettings(repo, { closeAction: "minimize" });
+      expect(() =>
+        saveSoftwareSettings(repo, { closeAction: "hide" }),
+      ).toThrow();
+      expect(settings(repo, "test").software.closeAction).toBe("minimize");
+      repo.setSetting("software", { closeAction: "invalid" });
+      expect(settings(repo, "test").software.closeAction).toBe("ask");
+    } finally {
+      repo.close();
+    }
+  });
   it("模型配置保存当前输入的 Key，重新打开后可回填，删空即清除", async () => {
     const dir = await mkdtemp(join(tmpdir(), "storybook-test-"));
     directories.push(dir);

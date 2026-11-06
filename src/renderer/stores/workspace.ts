@@ -7,6 +7,8 @@ import type {
   Chapter,
   Settings,
   SettingsInput,
+  SoftwareSettings,
+  CloseAction,
   Card,
   ImageAsset,
   TaskKind,
@@ -46,6 +48,8 @@ export const useWorkspace = defineStore("workspace", () => {
     memoryRevisionId = ref(""),
     taskError = ref("");
   const developmentDraft = ref<StoryDevelopmentDraft | null>(null);
+  const closePrompt = ref(false),
+    closingWindow = ref(false);
   const reviewingDevelopment = ref(false);
   const developmentUndoId = ref("");
   const selection = ref<{ text: string; from: number; to: number } | null>(
@@ -69,6 +73,8 @@ export const useWorkspace = defineStore("workspace", () => {
     toastTimer: ReturnType<typeof setTimeout> | undefined,
     flushing: Promise<void> | null = null;
   let generationProjectId = "";
+  let taskFinished = Promise.resolve();
+  let stopRequested = false;
   const api = <T>(action: string, payload?: unknown) =>
     window.storybook.invoke<T>(
       action,
@@ -141,7 +147,17 @@ export const useWorkspace = defineStore("workspace", () => {
               }
             }
             if (job.action === "settings:save" && !pending.has(key)) {
-              settings.value = result as Settings;
+              settings.value = {
+                ...(result as Settings),
+                software: settings.value!.software,
+              };
+            }
+            if (
+              job.action === "settings:software" &&
+              !pending.has(key) &&
+              settings.value
+            ) {
+              settings.value.software = result as SoftwareSettings;
             }
           } catch (error) {
             const newer = pending.get(key);
@@ -180,6 +196,37 @@ export const useWorkspace = defineStore("workspace", () => {
     };
     enqueue("settings", "settings:save", snapshot);
   }
+  function editSoftwareSettings(value: SoftwareSettings) {
+    if (!settings.value) return;
+    settings.value.software = { ...value };
+    enqueue("software", "settings:software", { ...value });
+  }
+  async function requestClose() {
+    if (closingWindow.value || closePrompt.value) return;
+    const action = settings.value?.software.closeAction ?? "ask";
+    if (action === "ask") closePrompt.value = true;
+    else await confirmClose(action);
+  }
+  async function confirmClose(
+    action: Exclude<CloseAction, "ask">,
+    remember = false,
+  ) {
+    if (closingWindow.value) return;
+    closingWindow.value = true;
+    try {
+      if (remember) editSoftwareSettings({ closeAction: action });
+      if (action === "quit" && busy.value) {
+        await stopTask();
+        await taskFinished;
+      }
+      scratch();
+      await flush();
+      await api(action === "minimize" ? "window:hide" : "window:close");
+      closePrompt.value = false;
+    } finally {
+      closingWindow.value = false;
+    }
+  }
   function editChapter(patch: {
     title?: string;
     plan?: string;
@@ -196,7 +243,7 @@ export const useWorkspace = defineStore("workspace", () => {
     });
   }
   function renameChapter(id: string, title: string) {
-    const target = detail.value?.chapters.find(item => item.id === id);
+    const target = detail.value?.chapters.find((item) => item.id === id);
     if (!target) throw new Error("章节不存在或不属于当前故事。");
     const name = title.trim();
     if (!name || name.length > 500) throw new Error("章节名称需为 1—500 字。");
@@ -335,8 +382,13 @@ export const useWorkspace = defineStore("workspace", () => {
       newChapter?: boolean;
     } = {},
   ) {
-    if (!detail.value || busy.value) return;
+    if (!detail.value || busy.value || closingWindow.value) return;
     const projectId = detail.value.project.id;
+    let markFinished!: () => void;
+    taskFinished = new Promise<void>((resolve) => {
+      markFinished = resolve;
+    });
+    stopRequested = false;
     generationProjectId = projectId;
     busy.value = true;
     taskError.value = "";
@@ -348,7 +400,7 @@ export const useWorkspace = defineStore("workspace", () => {
       )
         await newChapter();
       await flush();
-      if (detail.value?.project.id !== projectId) return;
+      if (stopRequested || detail.value?.project.id !== projectId) return;
       output.value = "";
       memoryRecords.value = null;
       memoryRevisionId.value = "";
@@ -417,9 +469,11 @@ export const useWorkspace = defineStore("workspace", () => {
         scratch();
         void safe(flush);
       }
+      markFinished();
     }
   }
   async function stopTask() {
+    stopRequested = true;
     if (requestId.value) await api("ai:cancel", requestId.value);
   }
   function reviewDevelopment(draft: StoryDevelopmentDraft) {
@@ -543,13 +597,8 @@ export const useWorkspace = defineStore("workspace", () => {
         scratch();
       }
     });
-    window.storybook.onClosing(() => {
-      void safe(async () => {
-        if (busy.value) await stopTask();
-        scratch();
-        await flush();
-        await api("window:close");
-      });
+    window.storybook.onClosing((action) => {
+      void safe(action === "quit" ? () => confirmClose("quit") : requestClose);
     });
   }
   return {
@@ -587,6 +636,11 @@ export const useWorkspace = defineStore("workspace", () => {
     flush,
     editProject,
     editSettings,
+    editSoftwareSettings,
+    closePrompt,
+    closingWindow,
+    requestClose,
+    confirmClose,
     editChapter,
     renameChapter,
     openProject,

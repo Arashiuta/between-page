@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, dialog, shell } from "electron";
+import { app, BrowserWindow, ipcMain, protocol, dialog, shell, Tray, Menu } from "electron";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -20,12 +20,15 @@ import { builtinWorkflowTemplates } from "../shared/workflows";
 import { taskKinds } from "../shared/types";
 import { developmentDraftSchema, developmentText } from "../shared/development";
 import { applyDevelopment, parseDevelopment, undoDevelopment } from "./development";
+import appIcon from "../../build/icon.png?asset";
+import trayIcon from "../../build/icon.ico?asset";
 import {
   resolveDataDir,
   initializeDirectories,
   settings,
   readKey,
   saveSettings,
+  saveSoftwareSettings,
   imageMime,
   makeBackup,
   migrateData,
@@ -60,6 +63,7 @@ const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) app.quit();
 let repo: StoryRepository;
 let window: BrowserWindow | null = null;
+let tray: Tray | null = null;
 const jobs = new Map<string, AbortController>();
 let closing = false;
 let maintenance = false;
@@ -450,6 +454,7 @@ const handlers: Record<
     return repo.saveGeneratedMemories(value.chapterId, value.revisionId, value.records);
   },
   "settings:save": (p) => saveSettings(repo, dataDir, p),
+  "settings:software": (p) => saveSoftwareSettings(repo, p),
   "settings:models": async (p) => {
     const value = z
       .object({
@@ -705,6 +710,10 @@ const handlers: Record<
     return true;
   },
   "window:minimize": () => window?.minimize(),
+  "window:hide": () => {
+    if (tray && !tray.isDestroyed()) window?.hide();
+    else throw new Error("系统托盘不可用，请使用标题栏的最小化按钮。");
+  },
   "window:maximize": () => {
     if (window?.isMaximized()) window.unmaximize();
     else window?.maximize();
@@ -715,6 +724,28 @@ const handlers: Record<
   },
 };
 
+function showWindow() {
+  if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+function createTray() {
+  tray = new Tray(trayIcon);
+  tray.setToolTip("页间 · 故事创作工作台");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "打开页间", click: showWindow },
+    { type: "separator" },
+    { label: "退出页间", click: () => {
+      showWindow();
+      window?.webContents.send("app:closing", "quit");
+    } },
+  ]));
+  tray.on("click", showWindow);
+  tray.on("double-click", showWindow);
+}
+
 async function createWindow() {
   window = new BrowserWindow({
     width: 1480,
@@ -724,6 +755,7 @@ async function createWindow() {
     frame: false,
     backgroundColor: "#f5f7fa",
     title: "页间 · 故事创作工作台",
+    icon: appIcon,
     show: false,
     webPreferences: {
       preload: join(__dirname, "../preload/index.cjs"),
@@ -759,13 +791,13 @@ async function createWindow() {
 }
 
 if (hasLock) {
-  app.on("second-instance", () => {
-    if (window?.isMinimized()) window.restore();
-    window?.focus();
-  });
+  app.on("second-instance", showWindow);
+  app.on("activate", showWindow);
   app
     .whenReady()
     .then(async () => {
+      app.setAppUserModelId("com.betweenpages.storybook");
+      app.setName("页间");
       repo = new StoryRepository(join(dataDir, "database", "storybook.sqlite"));
       protocol.handle("story-asset", async (request) => {
         try {
@@ -818,19 +850,28 @@ if (hasLock) {
         },
       );
       await createWindow();
+      createTray();
     })
     .catch((error) => {
       dialog.showErrorBox(
         "页间启动失败",
         `无法打开数据目录或应用：\n${error.message}\n\n请将软件放在有写入权限的文件夹后重试。`,
       );
+      closing = true;
       app.quit();
     });
   app.on("window-all-closed", () => app.quit());
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
+    if (!closing && window) {
+      event.preventDefault();
+      window.close();
+      return;
+    }
     for (const controller of jobs.values()) controller.abort();
   });
   app.on("will-quit", () => {
+    tray?.destroy();
+    tray = null;
     if (repo?.db.open) repo.close();
   });
 }

@@ -1877,6 +1877,55 @@ input {
   grid-template-columns: 1fr 1fr;
   gap: 23px;
 }
+.settings-tabs > .n-tabs-pane-wrapper {
+  padding-top: 16px;
+}
+.software-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.software-setting-row .field-label {
+  margin-top: 0;
+}
+.software-setting-row .n-select {
+  width: 240px;
+  flex-shrink: 0;
+}
+.titlebar-brand img {
+  width: 20px;
+  height: 20px;
+}
+.workbench-brand {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.close-window-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.close-window-heading img {
+  width: 48px;
+  height: 48px;
+}
+.close-window-heading h2 {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+.close-window-heading p {
+  color: var(--muted);
+  line-height: 1.8;
+  font-size: 13px;
+}
+.close-window-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
 .settings-card {
   border: 1px solid var(--border);
   background: var(--surface);

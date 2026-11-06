@@ -13,7 +13,11 @@ import { randomUUID } from "node:crypto";
 import { ZipFile } from "yazl";
 import { z } from "zod";
 import type { StoryRepository } from "./database";
-import type { Settings, ProviderConfig } from "../shared/types";
+import type {
+  Settings,
+  ProviderConfig,
+  SoftwareSettings,
+} from "../shared/types";
 import { modelSelection } from "../shared/models";
 
 export const programDir = app.isPackaged
@@ -89,12 +93,30 @@ export function settings(repo: StoryRepository, dataDir: string): Settings {
   };
   return {
     text: provider("text"),
+    software: softwareSettings(repo),
     image: provider("image"),
     imageSize: repo.getSetting("image.size", "1024x1024"),
     imageQuality: repo.getSetting("image.quality", "auto"),
     dataDir,
     version: app.getVersion(),
   };
+}
+const softwareSettingsSchema = z.object({
+  closeAction: z.enum(["ask", "minimize", "quit"]),
+});
+export function softwareSettings(repo: StoryRepository): SoftwareSettings {
+  const result = softwareSettingsSchema.safeParse(
+    repo.getSetting("software", { closeAction: "ask" }),
+  );
+  return result.success ? result.data : { closeAction: "ask" };
+}
+export function saveSoftwareSettings(
+  repo: StoryRepository,
+  input: unknown,
+): SoftwareSettings {
+  const value = softwareSettingsSchema.parse(input);
+  repo.setSetting("software", value);
+  return value;
 }
 export function saveSettings(
   repo: StoryRepository,

@@ -23,6 +23,7 @@ import {
 import { useWorkspace } from "./stores/workspace";
 import brandMark from "./assets/brand-mark.svg";
 import { freedomOptions } from "../shared/creation";
+import WindowCloseDialog from "./components/WindowCloseDialog.vue";
 import type { CreativeFreedom } from "../shared/types";
 const store = useWorkspace(),
   route = useRoute(),
@@ -74,7 +75,8 @@ const theme = {
     hoverColor: "rgba(29,36,51,.05)",
     fontSize: "14px",
     borderRadius: "8px",
-    fontFamily: '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
+    fontFamily:
+      '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
     baseColor: "#ffffff",
   },
   Input: {
@@ -90,9 +92,9 @@ const theme = {
   },
 };
 onMounted(async () => {
+  store.initializeListeners();
   try {
     await store.bootstrap();
-    store.initializeListeners();
   } catch (error) {
     startupError.value = error instanceof Error ? error.message : String(error);
   }
@@ -111,7 +113,10 @@ function showCreate() {
 async function create() {
   creating.value = true;
   await store.safe(async () => {
-    const p = await store.createProject({ ...form.value, title: form.value.title.trim() || "未命名故事" });
+    const p = await store.createProject({
+      ...form.value,
+      title: form.value.title.trim() || "未命名故事",
+    });
     newStory.value = false;
     await router.push("/story/" + p.id);
   });
@@ -175,14 +180,12 @@ async function create() {
           <RouterLink
             to="/help"
             :class="['nav-item', { active: route.path === '/help' }]"
-            ><CircleHelp :size="18" /><span>帮助</span
-            ><ArrowUpRight :size="14"
+            ><CircleHelp :size="18" /><span>帮助</span><ArrowUpRight :size="14"
           /></RouterLink>
           <RouterLink
             to="/settings"
             :class="['nav-item', { active: route.path === '/settings' }]"
-            ><Settings :size="18" /><span>设置与模型</span
-            ><ArrowUpRight :size="14"
+            ><Settings :size="18" /><span>设置</span><ArrowUpRight :size="14"
           /></RouterLink>
           <div class="local-caption">
             <span></span> 本地存储
@@ -192,7 +195,9 @@ async function create() {
       </aside>
       <div class="main-shell">
         <header class="titlebar">
-          <span>页间 · 故事创作工作台</span>
+          <span class="titlebar-brand"
+            ><img :src="brandMark" alt="页间" />页间 · 故事创作工作台</span
+          >
           <div class="titlebar-right">
             <span
               v-if="store.saveFailed"
@@ -218,14 +223,7 @@ async function create() {
               ><button
                 class="close"
                 aria-label="关闭"
-                @click="
-                  store.safe(async () => {
-                    if (store.busy) await store.stopTask();
-                    store.scratch();
-                    await store.flush();
-                    await store.api('window:close');
-                  })
-                "
+                @click="store.safe(store.requestClose)"
               >
                 <X :size="16" />
               </button>
@@ -252,6 +250,7 @@ async function create() {
           />{{ store.toast.message
           }}<button @click="store.toast = null"><X :size="14" /></button></div
       ></Transition>
+      <WindowCloseDialog />
       <NModal
         v-model:show="newStory"
         preset="card"
@@ -272,13 +271,19 @@ async function create() {
         <div class="mode-options">
           <button
             :class="{ selected: form.mode === 'explore' }"
-            @click="form.mode = 'explore'; form.creativeFreedom = 'free'"
+            @click="
+              form.mode = 'explore';
+              form.creativeFreedom = 'free';
+            "
           >
             <Feather :size="21" /><strong>自由探索</strong
             ><span>跟随角色，看看接下来会发生什么</span></button
           ><button
             :class="{ selected: form.mode === 'novel' }"
-            @click="form.mode = 'novel'; form.creativeFreedom = 'balanced'"
+            @click="
+              form.mode = 'novel';
+              form.creativeFreedom = 'balanced';
+            "
           >
             <BookOpen :size="21" /><strong>长篇创作</strong
             ><span>从整体构思，走向完整的作品</span>
@@ -292,8 +297,15 @@ async function create() {
           :autosize="{ minRows: 3, maxRows: 6 }"
           placeholder="例如：一个能操纵金属的人来到废土世界，开始一段公路冒险。没有更多设定也可以，之后边写边补。"
         />
-        <label class="field-label">AI 可以发挥多少？<small>创作中随时可调整，明确设定始终优先</small></label>
-        <NSelect v-model:value="form.creativeFreedom" :options="freedomOptions" />
+        <label class="field-label"
+          >AI 可以发挥多少？<small
+            >创作中随时可调整，明确设定始终优先</small
+          ></label
+        >
+        <NSelect
+          v-model:value="form.creativeFreedom"
+          :options="freedomOptions"
+        />
         <label class="field-label"
           >带上你的角色与世界观<small>可选，将复制到本故事</small></label
         ><NSelect

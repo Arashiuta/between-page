@@ -13,7 +13,6 @@ import {
   Maximize2,
   Minimize2,
   Play,
-  Sparkles,
   Square,
 } from "lucide-vue-next";
 import { effectiveRole, roleDefinitions } from "../../shared/roles";
@@ -22,6 +21,7 @@ import { toolInfo, toolCategories } from "../../shared/tools";
 import { freedomOptions, creativeFreedom } from "../../shared/creation";
 import type { TaskKind, TaskPreview } from "../../shared/types";
 import { memoryLabels } from "../../shared/types";
+import brandMark from "../assets/brand-mark.svg";
 
 const store = useWorkspace();
 const emit = defineEmits<{
@@ -142,7 +142,7 @@ async function applyMemoryDraft() {
     <aside class="workbench-panel">
       <header class="workbench-heading">
         <div class="workbench-heading-title">
-          <Sparkles :size="17" />
+          <img class="workbench-brand" :src="brandMark" alt="页间" />
           <h3>AI 工作台</h3>
           <span class="online-dot" :class="{ offline: !store.settings?.text.hasKey }"></span>
         </div>

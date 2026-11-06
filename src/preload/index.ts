@@ -19,9 +19,11 @@ const api: DesktopAPI = {
     ipcRenderer.on("ai:progress", listener);
     return () => ipcRenderer.removeListener("ai:progress", listener);
   },
-  onClosing(callback: () => void) {
-    ipcRenderer.on("app:closing", callback);
-    return () => ipcRenderer.removeListener("app:closing", callback);
+  onClosing(callback: (action?: "quit") => void) {
+    const listener = (_event: Electron.IpcRendererEvent, action?: "quit") =>
+      callback(action);
+    ipcRenderer.on("app:closing", listener);
+    return () => ipcRenderer.removeListener("app:closing", listener);
   },
 };
 contextBridge.exposeInMainWorld("storybook", api);

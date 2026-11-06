@@ -12,6 +12,7 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "preview": "electron-vite preview",
+    "icons": "electron scripts/generate-icons.cjs",
     "pack:win": "npm run build && electron-builder --win --dir",
     "dist:win": "npm run build && electron-builder --win zip",
     "format": "prettier --write src tests *.ts *.json README.md"
@@ -57,7 +58,8 @@
         "zip"
       ],
       "artifactName": "BetweenPages-${version}-win-${arch}.zip",
-      "signAndEditExecutable": false
+      "icon": "build/icon.ico",
+      "signExecutable": false
     }
   }
 }

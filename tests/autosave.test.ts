@@ -84,12 +84,195 @@ describe("自动保存队列", () => {
   function savedSettings(input: SettingsInput): Settings {
     return {
       ...structuredClone(input),
+      software: { closeAction: "ask" },
       text: { ...input.text, hasKey: !!input.text.key },
       image: { ...input.image, hasKey: !!input.image.key },
       dataDir: "test",
       version: "test",
     };
   }
+  it("关闭请求默认仅显示提示，重复请求不执行动作，取消不保存偏好", async () => {
+    const store = setup();
+    store.settings = savedSettings(settingsForm());
+    await store.requestClose();
+    await store.requestClose();
+    expect(store.closePrompt).toBe(true);
+    expect(invoke).not.toHaveBeenCalled();
+    store.closePrompt = false;
+    expect(store.settings.software.closeAction).toBe("ask");
+    await store.requestClose();
+    expect(store.closePrompt).toBe(true);
+  });
+  it("最小化保留生成任务，不勾选记住时下次仍然询问", async () => {
+    const store = setup();
+    store.settings = savedSettings(settingsForm());
+    store.busy = true;
+    invoke.mockResolvedValue(true);
+    await store.requestClose();
+    await store.confirmClose("minimize");
+    expect(store.busy).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("window:hide", undefined);
+    expect(
+      invoke.mock.calls.some(
+        ([action]) =>
+          action === "ai:cancel" ||
+          action === "window:close" ||
+          action === "settings:software",
+      ),
+    ).toBe(false);
+    expect(store.closePrompt).toBe(false);
+    await store.requestClose();
+    expect(store.closePrompt).toBe(true);
+  });
+  it("记住最小化后后续直接执行，可在软件设置恢复每次询问", async () => {
+    const store = setup();
+    store.settings = savedSettings(settingsForm());
+    invoke.mockImplementation((action, payload) =>
+      Promise.resolve(action === "settings:software" ? payload : true),
+    );
+    await store.requestClose();
+    await store.confirmClose("minimize", true);
+    expect(store.settings.software.closeAction).toBe("minimize");
+    expect(
+      invoke.mock.calls.findIndex(([action]) => action === "settings:software"),
+    ).toBeLessThan(
+      invoke.mock.calls.findIndex(([action]) => action === "window:hide"),
+    );
+    await store.requestClose();
+    expect(store.closePrompt).toBe(false);
+    expect(
+      invoke.mock.calls.filter(([action]) => action === "window:hide"),
+    ).toHaveLength(2);
+    store.editSoftwareSettings({ closeAction: "ask" });
+    await store.flush();
+    await store.requestClose();
+    expect(store.closePrompt).toBe(true);
+  });
+  it("系统关闭事件遵循已记住的退出动作，先保存正文再退出", async () => {
+    const store = setup();
+    store.settings = savedSettings(settingsForm());
+    store.settings.software.closeAction = "quit";
+    let closing = () => {};
+    window.storybook.onClosing = (callback) => {
+      closing = callback;
+      return () => {};
+    };
+    store.initializeListeners();
+    invoke.mockResolvedValue({ dirty: true, updatedAt: "saved" });
+    store.editChapter({ document: textToDocument("退出前的正文") });
+    closing();
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("window:close", undefined),
+    );
+    const actions = invoke.mock.calls.map(([action]) => action);
+    expect(actions.indexOf("chapter:update")).toBeLessThan(
+      actions.indexOf("window:close"),
+    );
+    expect(actions.indexOf("scratch:save")).toBeLessThan(
+      actions.indexOf("window:close"),
+    );
+    expect(store.closePrompt).toBe(false);
+  });
+  it("退出等待生成任务停止并保存最终草稿，重复点击只退出一次", async () => {
+    const store = setup();
+    let finish: (value: unknown) => void = () => {};
+    invoke.mockImplementation((action) => {
+      if (action === "ai:run")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return Promise.resolve(true);
+    });
+    const running = store.runTask();
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.some(([action]) => action === "ai:run")).toBe(
+        true,
+      ),
+    );
+    const closing = store.confirmClose("quit");
+    await store.confirmClose("quit");
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.some(([action]) => action === "ai:cancel")).toBe(
+        true,
+      ),
+    );
+    expect(
+      invoke.mock.calls.some(([action]) => action === "window:close"),
+    ).toBe(false);
+    finish({ text: "任务结束时收到的最后一段" });
+    await running;
+    await closing;
+    const saved = invoke.mock.calls
+      .filter(([action]) => action === "scratch:save")
+      .at(-1)![1];
+    expect(saved.output).toBe("任务结束时收到的最后一段");
+    expect(
+      invoke.mock.calls.filter(([action]) => action === "window:close"),
+    ).toHaveLength(1);
+  });
+  it("托盘菜单退出忽略记住的最小化偏好，先保存再真正退出", async () => {
+    const store = setup();
+    store.settings = savedSettings(settingsForm());
+    store.settings.software.closeAction = "minimize";
+    let closing: (action?: "quit") => void = () => {};
+    window.storybook.onClosing = (callback) => {
+      closing = callback;
+      return () => {};
+    };
+    store.initializeListeners();
+    invoke.mockResolvedValue({ dirty: true, updatedAt: "saved" });
+    store.editChapter({ document: textToDocument("托盘退出前保存") });
+    closing("quit");
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("window:close", undefined),
+    );
+    const actions = invoke.mock.calls.map(([action]) => action);
+    expect(actions.indexOf("chapter:update")).toBeLessThan(
+      actions.indexOf("window:close"),
+    );
+    expect(actions).not.toContain("window:hide");
+    expect(store.settings.software.closeAction).toBe("minimize");
+  });
+  it("关闭前保存失败时保留窗口与提示，重试成功后才退出", async () => {
+    const store = setup();
+    invoke
+      .mockRejectedValueOnce(new Error("磁盘不可写"))
+      .mockResolvedValue(true);
+    await store.requestClose();
+    await expect(store.confirmClose("quit")).rejects.toThrow("不可写");
+    expect(store.closePrompt).toBe(true);
+    expect(store.closingWindow).toBe(false);
+    expect(
+      invoke.mock.calls.some(([action]) => action === "window:close"),
+    ).toBe(false);
+    await store.confirmClose("quit");
+    expect(invoke).toHaveBeenCalledWith("window:close", undefined);
+  });
+  it("模型配置保存中修改软件设置，两个保存队列不会相互覆盖", async () => {
+    const store = setup(),
+      form = settingsForm();
+    store.settings = savedSettings(form);
+    let release: (value: unknown) => void = () => {};
+    invoke
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockImplementation((_action, payload) => Promise.resolve(payload));
+    store.editSettings(form);
+    const saving = store.flush();
+    store.editSoftwareSettings({ closeAction: "minimize" });
+    release(savedSettings(form));
+    await saving;
+    expect(store.settings.software.closeAction).toBe("minimize");
+    expect(store.settings.text.key).toBe(form.text.key);
+    expect(invoke.mock.calls.map(([action]) => action)).toEqual([
+      "settings:save",
+      "settings:software",
+    ]);
+  });
   it("设置连续输入后自动合并保存，并保留当前 Key 与模型", async () => {
     vi.useFakeTimers();
     const store = setup(),

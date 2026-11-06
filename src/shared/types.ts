@@ -216,7 +216,12 @@ export interface ProviderConfig {
   availableModels: string[];
   hasKey: boolean;
 }
+export type CloseAction = "ask" | "minimize" | "quit";
+export interface SoftwareSettings {
+  closeAction: CloseAction;
+}
 export interface Settings {
+  software: SoftwareSettings;
   text: ProviderConfig;
   image: ProviderConfig;
   imageSize: string;
@@ -273,7 +278,7 @@ export interface ProgressEvent {
 export interface DesktopAPI {
   invoke<T = unknown>(action: string, payload?: unknown): Promise<T>;
   onProgress(callback: (event: ProgressEvent) => void): () => void;
-  onClosing(callback: () => void): () => void;
+  onClosing(callback: (action?: "quit") => void): () => void;
 }
 export const memoryLabels: Record<MemoryKind, string> = {
   fact: "故事事实",
