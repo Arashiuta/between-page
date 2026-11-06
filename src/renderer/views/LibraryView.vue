@@ -13,6 +13,10 @@ import {
 import { NPopconfirm } from "naive-ui";
 import { useWorkspace } from "../stores/workspace";
 import { textToDocument } from "../../shared/document";
+import StoryCover from "../components/StoryCover.vue";
+import CoverEditor from "../components/CoverEditor.vue";
+import type { Project } from "../../shared/types";
+const editingCover = ref<Project>();
 const store = useWorkspace(),
   router = useRouter(),
   archived = ref(false),
@@ -125,19 +129,15 @@ async function deleteProject(id: string) {
         class="story-card"
         @click="router.push('/story/' + p.id)"
       >
-        <div :class="['story-cover', p.color]">
-          <span class="cover-mode"
-            ><Feather v-if="p.mode === 'explore'" :size="12" /><BookOpen
-              v-else
-              :size="12"
-            />{{ p.mode === "explore" ? "自由探索" : "长篇创作" }}</span
+        <StoryCover :project="p"
+          ><button
+            class="cover-edit-button"
+            :aria-label="`设置《${p.title}》的封面`"
+            @click.stop="editingCover = p"
           >
-          <div class="cover-lines"></div>
-          <BookOpen class="cover-icon" :size="44" :stroke-width="1" /><span
-            class="cover-genre"
-            >{{ p.genre }}</span
-          >
-        </div>
+            {{ p.cover ? "调整封面" : "上传封面" }}
+          </button></StoryCover
+        >
         <div class="story-card-body">
           <div class="story-card-title">
             <h3>{{ p.title }}</h3>
@@ -183,5 +183,14 @@ async function deleteProject(id: string) {
     <footer class="page-footer">
       <span><span class="tiny-dot"></span> 资料保存在本机</span>
     </footer>
+    <CoverEditor
+      :show="!!editingCover"
+      :project="editingCover"
+      @update:show="
+        (v) => {
+          if (!v) editingCover = undefined;
+        }
+      "
+    />
   </main>
 </template>

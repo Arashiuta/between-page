@@ -7,6 +7,8 @@ import { z } from "zod";
 import { StoryRepository } from "./database";
 import { assetPath, readAsset, removeAsset, saveImageAsset } from "./assets";
 import { assertDataLayoutSupported } from "./data-layout";
+import { createProjectWithCover, saveCover } from "./covers";
+import { coverUploadSchema, coverCropSchema } from "../shared/cover";
 import { chat, generateImage, listModels, type Connection } from "./provider";
 import { buildTask, parseMemories } from "./prompts";
 import { buildChapterTitleMessages, parseChapterTitle } from "./chapter-title";
@@ -195,7 +197,9 @@ const handlers: Record<
     return true;
   },
   "project:create": (p) =>
-    repo.createProject(
+    createProjectWithCover(
+      repo,
+      dataDir,
       z
         .object({
           title: shortText.trim().min(1),
@@ -204,9 +208,24 @@ const handlers: Record<
           creativeFreedom: freedomSchema.optional(),
           genre: shortText.optional(),
           cardIds: z.array(idSchema).max(100).optional(),
+          cover: coverUploadSchema.optional(),
         })
         .parse(p),
     ),
+  "project:cover:save": (p) => {
+    const value = z
+      .object({
+        projectId: idSchema,
+        source: z.union([
+          z.object({ upload: coverUploadSchema }),
+          z.object({ imageId: idSchema, crop: coverCropSchema }),
+        ]),
+      })
+      .parse(p);
+    return saveCover(repo, dataDir, value.projectId, value.source);
+  },
+  "project:cover:remove": (p) =>
+    saveCover(repo, dataDir, idSchema.parse(p), null),
   "project:update": (p) => {
     const { id, ...patch } = z
       .object({

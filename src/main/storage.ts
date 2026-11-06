@@ -31,6 +31,7 @@ import type {
 } from "../shared/types";
 import { modelSelection } from "../shared/models";
 import { migrateLegacyAssets } from "./assets";
+import { normalizeSoftware, softwarePatchSchema } from "../shared/appearance";
 import {
   createDataDirectories,
   assertDataLayoutSupported,
@@ -124,20 +125,20 @@ export function settings(repo: StoryRepository, dataDir: string): Settings {
     version: app.getVersion(),
   };
 }
-const softwareSettingsSchema = z.object({
-  closeAction: z.enum(["ask", "minimize", "quit"]),
-});
 export function softwareSettings(repo: StoryRepository): SoftwareSettings {
-  const result = softwareSettingsSchema.safeParse(
-    repo.getSetting("software", { closeAction: "ask" }),
-  );
-  return result.success ? result.data : { closeAction: "ask" };
+  return normalizeSoftware(repo.getSetting("software", {}));
 }
 export function saveSoftwareSettings(
   repo: StoryRepository,
   input: unknown,
 ): SoftwareSettings {
-  const value = softwareSettingsSchema.parse(input);
+  const patch = softwarePatchSchema.parse(input),
+    current = softwareSettings(repo);
+  const value = {
+    ...current,
+    ...patch,
+    appearance: { ...current.appearance, ...patch.appearance },
+  };
   repo.setSetting("software", value);
   return value;
 }

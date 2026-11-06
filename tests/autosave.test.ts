@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useWorkspace } from "../src/renderer/stores/workspace";
 import { textToDocument } from "../src/shared/document";
 import { reactive } from "vue";
+import { defaultAppearance } from "../src/shared/appearance";
 import type {
   ProgressEvent,
   Settings,
@@ -84,7 +85,7 @@ describe("自动保存队列", () => {
   function savedSettings(input: SettingsInput): Settings {
     return {
       ...structuredClone(input),
-      software: { closeAction: "ask" },
+      software: { closeAction: "ask", appearance: defaultAppearance() },
       text: { ...input.text, hasKey: !!input.text.key },
       image: { ...input.image, hasKey: !!input.image.key },
       dataDir: "test",
@@ -272,6 +273,56 @@ describe("自动保存队列", () => {
       "settings:save",
       "settings:software",
     ]);
+  });
+  it("外观保存中连续修改字号与关闭动作，重试和恢复默认不丢其他字段", async () => {
+    const store = setup();
+    store.settings = savedSettings(settingsForm());
+    let release: (value: unknown) => void = () => {};
+    invoke
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (release = resolve)),
+      )
+      .mockRejectedValueOnce(new Error("保存失败"))
+      .mockImplementation((_action, payload) => Promise.resolve(payload));
+    store.editSoftwareSettings({ appearance: { theme: "night" } });
+    const saving = store.flush();
+    const old = structuredClone(invoke.mock.calls[0][1]);
+    store.editSoftwareSettings({ appearance: { uiFontSize: 20 } });
+    store.editSoftwareSettings({ closeAction: "minimize" });
+    release(old);
+    await expect(saving).rejects.toThrow("保存失败");
+    expect(store.settings.software).toMatchObject({
+      closeAction: "minimize",
+      appearance: { theme: "night", uiFontSize: 20 },
+    });
+    await store.flush();
+    store.editSoftwareSettings({ appearance: defaultAppearance() });
+    await store.flush();
+    expect(store.settings.software).toEqual({
+      closeAction: "minimize",
+      appearance: defaultAppearance(),
+    });
+  });
+  it("全量刷新返回旧设置时保留刷新期间已保存的新外观", async () => {
+    const store = setup();
+    store.settings = savedSettings(settingsForm());
+    let release: (value: unknown) => void = () => {};
+    invoke.mockImplementation((action, payload) =>
+      action === "bootstrap"
+        ? new Promise((resolve) => (release = resolve))
+        : Promise.resolve(payload),
+    );
+    const refreshing = store.bootstrap();
+    store.editSoftwareSettings({ appearance: { theme: "night" } });
+    await store.flush();
+    release({
+      projects: [],
+      cards: [],
+      images: [],
+      settings: savedSettings(settingsForm()),
+    });
+    await refreshing;
+    expect(store.settings.software.appearance.theme).toBe("night");
   });
   it("设置连续输入后自动合并保存，并保留当前 Key 与模型", async () => {
     vi.useFakeTimers();

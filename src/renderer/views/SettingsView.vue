@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, watch, computed } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 import { NInput, NButton, NSelect, NTabs, NTabPane } from "naive-ui";
 import { Plug, Image } from "lucide-vue-next";
@@ -9,6 +10,14 @@ import ProviderModels from "../components/ProviderModels.vue";
 import SoftwareSettings from "../components/SoftwareSettings.vue";
 const store = useWorkspace(),
   testing = ref(false);
+const route = useRoute(),
+  router = useRouter();
+const activeTab = computed(() =>
+  route.query.tab === "models" ? "models" : "software",
+);
+function changeTab(tab: string) {
+  void router.replace({ path: "/settings", query: { ...route.query, tab } });
+}
 const { settings: currentSettings } = storeToRefs(store);
 const form = ref<SettingsInput>({
   text: {
@@ -50,7 +59,13 @@ async function test() {
       </div>
       <span class="muted">更改自动保存</span>
     </div>
-    <NTabs type="line" default-value="software" class="settings-tabs" animated>
+    <NTabs
+      type="line"
+      :value="activeTab"
+      @update:value="changeTab"
+      class="settings-tabs"
+      animated
+    >
       <NTabPane name="software" tab="软件设置" display-directive="show">
         <SoftwareSettings />
       </NTabPane>

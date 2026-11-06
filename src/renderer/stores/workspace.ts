@@ -8,6 +8,9 @@ import type {
   Settings,
   SettingsInput,
   SoftwareSettings,
+  SoftwareSettingsPatch,
+  CoverUpload,
+  CoverCrop,
   CloseAction,
   Card,
   ImageAsset,
@@ -24,6 +27,7 @@ import { defaultRoleSettings } from "../../shared/roles";
 import { documentToText } from "../../shared/document";
 import { toolInfo } from "../../shared/tools";
 import { developmentText } from "../../shared/development";
+import { normalizeSoftware } from "../../shared/appearance";
 
 export const useWorkspace = defineStore("workspace", () => {
   const ready = ref(false),
@@ -73,6 +77,7 @@ export const useWorkspace = defineStore("workspace", () => {
     toastTimer: ReturnType<typeof setTimeout> | undefined,
     flushing: Promise<void> | null = null;
   let generationProjectId = "";
+  let softwareRevision = 0;
   let taskFinished = Promise.resolve();
   let stopRequested = false;
   const api = <T>(action: string, payload?: unknown) =>
@@ -102,11 +107,19 @@ export const useWorkspace = defineStore("workspace", () => {
   async function bootstrap() {
     if (!window.storybook)
       throw new Error("桌面连接未建立。请通过页间桌面程序启动。");
+    const revision = softwareRevision;
     const value = await api<Bootstrap>("bootstrap");
     projects.value = value.projects;
     cards.value = value.cards;
     images.value = value.images;
-    settings.value = value.settings;
+    const pendingSoftware =
+      pending.has("software") || saving.value || revision !== softwareRevision
+        ? settings.value?.software
+        : undefined;
+    settings.value = {
+      ...value.settings,
+      software: pendingSoftware ?? normalizeSoftware(value.settings.software),
+    };
     roles.value = value.roles ?? defaultRoleSettings();
     ready.value = true;
   }
@@ -196,10 +209,20 @@ export const useWorkspace = defineStore("workspace", () => {
     };
     enqueue("settings", "settings:save", snapshot);
   }
-  function editSoftwareSettings(value: SoftwareSettings) {
+  function editSoftwareSettings(value: SoftwareSettingsPatch) {
     if (!settings.value) return;
-    settings.value.software = { ...value };
-    enqueue("software", "settings:software", { ...value });
+    softwareRevision++;
+    const current = normalizeSoftware(settings.value.software);
+    settings.value.software = {
+      ...current,
+      ...value,
+      appearance: { ...current.appearance, ...value.appearance },
+    };
+    enqueue(
+      "software",
+      "settings:software",
+      JSON.parse(JSON.stringify(settings.value.software)),
+    );
   }
   async function requestClose() {
     if (closingWindow.value || closePrompt.value) return;
@@ -554,7 +577,11 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   async function setModel(kind: "text" | "image", model: string) {
     await flush();
-    settings.value = await api<Settings>("settings:model", { kind, model });
+    const result = await api<Settings>("settings:model", { kind, model });
+    settings.value = {
+      ...result,
+      software: settings.value?.software ?? result.software,
+    };
   }
   async function saveCard(card: CardInput) {
     const result = await api<Card>("card:save", card);
@@ -578,9 +605,26 @@ export const useWorkspace = defineStore("workspace", () => {
     creativeFreedom?: CreativeFreedom;
     genre?: string;
     cardIds?: string[];
+    cover?: CoverUpload;
   }) {
+    await flush();
     const project = await api<Project>("project:create", value);
     await bootstrap();
+    return project;
+  }
+  async function saveProjectCover(
+    projectId: string,
+    source:
+      { upload: CoverUpload } | { imageId: string; crop: CoverCrop } | null,
+  ) {
+    await flush();
+    const project = source
+      ? await api<Project>("project:cover:save", { projectId, source })
+      : await api<Project>("project:cover:remove", projectId);
+    projects.value = projects.value.map((p) =>
+      p.id === projectId ? project : p,
+    );
+    if (detail.value?.project.id === projectId) detail.value.project = project;
     return project;
   }
   function imageUrl(id: string) {
@@ -659,6 +703,7 @@ export const useWorkspace = defineStore("workspace", () => {
     saveCard,
     deleteCard,
     createProject,
+    saveProjectCover,
     imageUrl,
     initializeListeners,
     scratch,

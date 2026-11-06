@@ -11,6 +11,7 @@ import {
 } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import type { CloseAction } from "../../shared/types";
+import AppearanceSettings from "./AppearanceSettings.vue";
 
 const store = useWorkspace();
 const backupBusy = ref(false),
@@ -51,6 +52,7 @@ async function move() {
 
 <template>
   <div class="software-settings">
+    <AppearanceSettings />
     <section class="settings-card">
       <div class="settings-card-heading">
         <span class="settings-icon"><AppWindow :size="20" /></span>

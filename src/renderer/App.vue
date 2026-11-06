@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from "vue";
+import { onMounted, ref, computed, watchEffect } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { NConfigProvider, NModal, NInput, NSelect, NButton } from "naive-ui";
+import {
+  NConfigProvider,
+  NModal,
+  NInput,
+  NSelect,
+  NButton,
+  darkTheme,
+} from "naive-ui";
 import {
   BookOpen,
   Library,
@@ -24,13 +31,24 @@ import { useWorkspace } from "./stores/workspace";
 import brandMark from "./assets/brand-mark.svg";
 import { freedomOptions } from "../shared/creation";
 import WindowCloseDialog from "./components/WindowCloseDialog.vue";
-import type { CreativeFreedom } from "../shared/types";
+import CoverEditor from "./components/CoverEditor.vue";
+import {
+  defaultAppearance,
+  appearanceTokens,
+  activeColors,
+  isDark,
+} from "../shared/appearance";
+import { coverImageStyle } from "../shared/cover";
+import { naiveTheme } from "./theme";
+import type { CreativeFreedom, CoverUpload } from "../shared/types";
 const store = useWorkspace(),
   route = useRoute(),
   router = useRouter();
 const startupError = ref(""),
   newStory = ref(false),
   creating = ref(false);
+const coverEditor = ref(false),
+  newCover = ref<CoverUpload>();
 const form = ref({
   title: "",
   premise: "",
@@ -53,44 +71,21 @@ const nav = [
   { to: "/gallery", label: "插画收藏", icon: Images },
   { to: "/roles", label: "AI 职责", icon: Bot },
 ];
-const theme = {
-  common: {
-    primaryColor: "#2b5bb8",
-    primaryColorHover: "#3467c8",
-    primaryColorPressed: "#1d4290",
-    primaryColorSuppl: "#2b5bb8",
-    textColorBase: "#1d2433",
-    textColor1: "#1d2433",
-    textColor2: "#363d4c",
-    textColor3: "#464e5e",
-    placeholderColor: "#8f95a0",
-    borderColor: "#ddd6c7",
-    dividerColor: "#e6e1d6",
-    bodyColor: "#f1ede4",
-    cardColor: "#fffefb",
-    modalColor: "#fffefb",
-    popoverColor: "#fffefb",
-    inputColor: "#fffefb",
-    tableColor: "#fffefb",
-    hoverColor: "rgba(29,36,51,.05)",
-    fontSize: "14px",
-    borderRadius: "8px",
-    fontFamily:
-      '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
-    baseColor: "#ffffff",
-  },
-  Input: {
-    borderFocus: "1px solid #2b5bb8",
-    borderHover: "1px solid #b9c9e6",
-    boxShadowFocus: "0 0 0 3px rgba(43,91,184,.12)",
-  },
-  Card: {
-    borderRadius: "14px",
-  },
-  Button: {
-    fontWeight: "500",
-  },
-};
+const appearance = computed(
+  () => store.settings?.software.appearance ?? defaultAppearance(),
+);
+const theme = computed(() => naiveTheme(appearance.value));
+const componentTheme = computed(() =>
+  isDark(activeColors(appearance.value).surface) ? darkTheme : null,
+);
+watchEffect(() => {
+  const tokens = appearanceTokens(appearance.value);
+  for (const [key, value] of Object.entries(tokens))
+    document.documentElement.style.setProperty(`--${key}`, value);
+  document.documentElement.style.colorScheme = isDark(tokens.page)
+    ? "dark"
+    : "light";
+});
 onMounted(async () => {
   store.initializeListeners();
   try {
@@ -100,6 +95,7 @@ onMounted(async () => {
   }
 });
 function showCreate() {
+  newCover.value = undefined;
   form.value = {
     title: "",
     premise: "",
@@ -115,6 +111,7 @@ async function create() {
   await store.safe(async () => {
     const p = await store.createProject({
       ...form.value,
+      cover: newCover.value,
       title: form.value.title.trim() || "未命名故事",
     });
     newStory.value = false;
@@ -124,7 +121,7 @@ async function create() {
 }
 </script>
 <template>
-  <NConfigProvider :theme-overrides="theme">
+  <NConfigProvider :theme="componentTheme" :theme-overrides="theme">
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
@@ -315,6 +312,27 @@ async function create() {
           placeholder="选择已有创作资料"
           :disabled="!options.length"
         />
+        <label class="field-label"
+          >故事封面<small>可选，之后随时更换</small></label
+        >
+        <div v-if="newCover" class="new-cover-preview">
+          <img
+            :src="newCover.dataUrl"
+            :style="coverImageStyle(newCover.crop)"
+            alt="新故事封面"
+          />
+        </div>
+        <div class="cover-editor-actions">
+          <NButton :disabled="creating" @click="coverEditor = true">{{
+            newCover ? "调整或更换封面" : "上传封面"
+          }}</NButton
+          ><NButton
+            v-if="newCover"
+            :disabled="creating"
+            @click="newCover = undefined"
+            >移除封面</NButton
+          >
+        </div>
         <template #footer
           ><div class="modal-footer">
             <NButton @click="newStory = false" :disabled="creating"
@@ -324,6 +342,11 @@ async function create() {
             ></NButton></div
         ></template>
       </NModal>
+      <CoverEditor
+        v-model:show="coverEditor"
+        :initial="newCover"
+        @selected="(v) => (newCover = v)"
+      />
     </div>
   </NConfigProvider>
 </template>

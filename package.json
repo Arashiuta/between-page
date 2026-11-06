@@ -1,6 +1,6 @@
 {
   "name": "between-pages",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "页间 · OC 故事创作工作台",
   "main": "./out/main/index.js",
   "author": "Between Pages",

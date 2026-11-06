@@ -176,17 +176,20 @@ export class StoryRepository {
       ),
     };
   }
-  createProject(input: {
-    title: string;
-    premise: string;
-    mode: Mode;
-    creativeFreedom?: CreativeFreedom;
-    genre?: string;
-    cardIds?: string[];
-  }): Project {
+  createProject(
+    input: {
+      title: string;
+      premise: string;
+      mode: Mode;
+      creativeFreedom?: CreativeFreedom;
+      genre?: string;
+      cardIds?: string[];
+    },
+    projectId = randomUUID(),
+  ): Project {
     return this.db.transaction(() => {
       const project: Project = {
-        id: randomUUID(),
+        id: projectId,
         title: input.title,
         premise: input.premise,
         mode: input.mode,
@@ -233,6 +236,7 @@ export class StoryRepository {
         | "blueprintSections"
         | "blueprintCandidates"
         | "archived"
+        | "cover"
       >
     >,
   ) {
@@ -590,6 +594,22 @@ export class StoryRepository {
       .prepare("INSERT INTO images VALUES (?, ?, ?)")
       .run(image.id, image.projectId, JSON.stringify(image));
     return image;
+  }
+  removeCoverImage(id: string): string | null {
+    const image = this.listImages().find((item) => item.id === id);
+    if (!image) return null;
+    if (image.kind !== "cover") throw new Error("只能清理封面图片。");
+    if (this.listProjects().some((p) => p.cover?.imageId === id)) return null;
+    const cards = this.all<Card>("SELECT payload FROM cards");
+    if (
+      cards.some((c) => c.referenceIds.includes(id)) ||
+      this.listImages().some((i) => i.referenceIds.includes(id))
+    )
+      return null;
+    this.db.prepare("DELETE FROM images WHERE id = ?").run(id);
+    return this.listImages().some((i) => i.filename === image.filename)
+      ? null
+      : image.filename;
   }
   updateImageFilename(id: string, filename: string) {
     const image = { ...this.getImage(id), filename };

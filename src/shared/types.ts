@@ -6,7 +6,7 @@ export const taskKinds = [
   "opening", "chapter", "develop", "outline", "adjust", "check", "notes",
   "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc",
 ] as const;
-export type TaskKind = typeof taskKinds[number];
+export type TaskKind = (typeof taskKinds)[number];
 export type CreativeFreedom = "guided" | "balanced" | "free";
 export interface BlueprintSection {
   id: string;
@@ -86,6 +86,7 @@ export interface DocumentNode {
 }
 export interface Project {
   id: string;
+  cover?: StoryCover | null;
   title: string;
   premise: string;
   mode: Mode;
@@ -200,7 +201,7 @@ export interface ImageAsset {
   projectId: string | null;
   chapterId: string | null;
   revisionId: string | null;
-  kind: "reference" | "illustration";
+  kind: "reference" | "illustration" | "cover";
   name: string;
   /** Portable path relative to data/assets; older records may use a flat filename. */
   filename: string;
@@ -218,9 +219,45 @@ export interface ProviderConfig {
   hasKey: boolean;
 }
 export type CloseAction = "ask" | "minimize" | "quit";
+export interface CoverCrop {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+export interface StoryCover {
+  imageId: string;
+  crop: CoverCrop;
+}
+export interface CoverUpload {
+  name: string;
+  dataUrl: string;
+  crop: CoverCrop;
+}
+export type PresetTheme = "classic" | "sage" | "warm" | "night";
+export interface ThemeColors {
+  primary: string;
+  page: string;
+  surface: string;
+  paper: string;
+  ink: string;
+  sidebar: string;
+}
+export interface AppearanceSettings {
+  uiFontSize: number;
+  editorFontSize: number;
+  theme: PresetTheme | "custom";
+  customBase: PresetTheme;
+  customColors: ThemeColors | null;
+}
 export interface SoftwareSettings {
   closeAction: CloseAction;
+  appearance: AppearanceSettings;
 }
+export type SoftwareSettingsPatch = {
+  closeAction?: CloseAction;
+  appearance?: Partial<AppearanceSettings>;
+};
 export interface Settings {
   software: SoftwareSettings;
   text: ProviderConfig;

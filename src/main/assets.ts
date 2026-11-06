@@ -61,6 +61,7 @@ export function imageFilename(
   const purposes: Record<ImageAsset["kind"], string> = {
     reference: "references",
     illustration: "illustrations",
+    cover: "covers",
   };
   if (
     !/^[a-z0-9_-]+$/i.test(image.id) ||
@@ -81,7 +82,11 @@ export async function removeAsset(dataDir: string, filename: string) {
   await rm(await assetPath(dataDir, filename), { force: true });
 }
 
-async function writeAsset(dataDir: string, filename: string, bytes: Buffer) {
+export async function writeAsset(
+  dataDir: string,
+  filename: string,
+  bytes: Buffer,
+) {
   const key = resolve(dataDir, "assets", filename);
   if (pendingWrites.has(key)) throw new Error("该素材正在保存，请稍后重试。");
   pendingWrites.add(key);

@@ -28,6 +28,7 @@ export function normalizeProject(project: Project): Project {
   }
   return {
     ...project,
+    cover: project.cover ?? null,
     creativeFreedom: project.creativeFreedom ?? "balanced",
     outline: "",
     blueprintSections: sections,

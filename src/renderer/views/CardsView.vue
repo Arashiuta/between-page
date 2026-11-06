@@ -25,7 +25,7 @@ const cardMenuOptions = computed(() => [
     key: "delete",
     label: "删除资料",
     icon: () => h(Trash2, { size: 15 }),
-    props: { style: { color: "#b91c1c" } },
+    props: { style: { color: "var(--danger)" } },
     disabled: deleting.value,
   },
 ]);
