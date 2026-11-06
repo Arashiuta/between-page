@@ -202,6 +202,7 @@ export interface ImageAsset {
   revisionId: string | null;
   kind: "reference" | "illustration";
   name: string;
+  /** Portable path relative to data/assets; older records may use a flat filename. */
   filename: string;
   prompt: string;
   referenceIds: string[];

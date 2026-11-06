@@ -2,9 +2,11 @@ import { app, BrowserWindow, ipcMain, protocol, dialog, shell, Tray, Menu } from
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile, copyFile, stat, unlink } from "node:fs/promises";
+import { readFile, writeFile, copyFile, stat } from "node:fs/promises";
 import { z } from "zod";
 import { StoryRepository } from "./database";
+import { assetPath, readAsset, removeAsset, saveImageAsset } from "./assets";
+import { assertDataLayoutSupported } from "./data-layout";
 import { chat, generateImage, listModels, type Connection } from "./provider";
 import { buildTask, parseMemories } from "./prompts";
 import { buildChapterTitleMessages, parseChapterTitle } from "./chapter-title";
@@ -25,6 +27,7 @@ import trayIcon from "../../build/icon.ico?asset";
 import {
   resolveDataDir,
   initializeDirectories,
+  upgradeDataLayout,
   settings,
   readKey,
   saveSettings,
@@ -67,6 +70,7 @@ let tray: Tray | null = null;
 const jobs = new Map<string, AbortController>();
 let closing = false;
 let maintenance = false;
+let activeOperations = 0;
 const idSchema = z.string().uuid();
 const shortText = z.string().max(500);
 const longText = z.string().max(200_000);
@@ -146,6 +150,7 @@ const taskSchema = z.object({
 });
 function assertIdle() {
   if (jobs.size) throw new Error("请先停止或等待当前生成任务完成。");
+  if (activeOperations > 1) throw new Error("请等待当前文件或保存操作完成后重试。");
 }
 
 const handlers: Record<
@@ -233,8 +238,11 @@ const handlers: Record<
     return repo.updateProject(id, patch);
   },
   "project:delete": async (p) => {
+    assertIdle();
     const filenames = repo.deleteArchivedProject(idSchema.parse(p));
-    await Promise.all(filenames.map((filename) => unlink(join(dataDir, "assets", filename)).catch(() => undefined)));
+    await Promise.all(filenames.map((filename) => removeAsset(dataDir, filename).catch((error) => {
+      console.warn("故事已删除，但有素材未能清理：", filename, error);
+    })));
     return true;
   },
   "workflow:templates:get": () => [
@@ -568,9 +576,8 @@ const handlers: Record<
         info = imageMime(bytes),
         id = randomUUID(),
         filename = id + info.extension;
-      await writeFile(join(dataDir, "assets", filename), bytes);
       imported.push(
-        repo.addImage({
+        await saveImageAsset(repo, dataDir, {
           id,
           projectId: value.projectId,
           chapterId: null,
@@ -582,7 +589,7 @@ const handlers: Record<
           referenceIds: [],
           model: "",
           createdAt: new Date().toISOString(),
-        }),
+        }, bytes),
       );
     }
     return imported;
@@ -606,10 +613,10 @@ const handlers: Record<
     const references = await Promise.all(
       value.referenceIds.map(async (id) => {
         const ref = repo.getImage(id),
-          data = await readFile(join(dataDir, "assets", ref.filename));
+          data = await readAsset(dataDir, ref.filename);
         return {
           data: new Uint8Array(data),
-          name: ref.filename,
+          name: basename(ref.filename),
           mime: imageMime(data).mime,
         };
       }),
@@ -630,8 +637,7 @@ const handlers: Record<
       const info = imageMime(result.bytes),
         id = randomUUID(),
         filename = id + info.extension;
-      await writeFile(join(dataDir, "assets", filename), result.bytes);
-      return repo.addImage({
+      return await saveImageAsset(repo, dataDir, {
         id,
         projectId: value.projectId,
         chapterId: value.chapterId ?? null,
@@ -643,7 +649,7 @@ const handlers: Record<
         referenceIds: value.referenceIds,
         model: config.model,
         createdAt: new Date().toISOString(),
-      });
+      }, result.bytes);
     } finally {
       jobs.delete(jobId);
     }
@@ -659,7 +665,7 @@ const handlers: Record<
       ),
     });
     if (result.canceled || !result.filePath) return null;
-    await copyFile(join(dataDir, "assets", image.filename), result.filePath);
+    await copyFile(await assetPath(dataDir, image.filename), result.filePath);
     return result.filePath;
   },
   "project:export": async (p) => {
@@ -685,9 +691,14 @@ const handlers: Record<
     await writeFile(result.filePath, content, "utf8");
     return result.filePath;
   },
-  "storage:backup": () => {
+  "storage:backup": async () => {
     assertIdle();
-    return makeBackup(repo, dataDir);
+    maintenance = true;
+    try {
+      return await makeBackup(repo, dataDir);
+    } finally {
+      maintenance = false;
+    }
   },
   "storage:open": () => shell.openPath(dataDir),
   "storage:move": async () => {
@@ -798,15 +809,19 @@ if (hasLock) {
     .then(async () => {
       app.setAppUserModelId("com.betweenpages.storybook");
       app.setName("页间");
+      assertDataLayoutSupported(dataDir);
       repo = new StoryRepository(join(dataDir, "database", "storybook.sqlite"));
+      const layout = await upgradeDataLayout(repo, dataDir);
+      if (layout.missing.length)
+        console.warn("以下旧图片文件缺失，已保留原记录以便恢复：", layout.missing);
       protocol.handle("story-asset", async (request) => {
         try {
           const url = new URL(request.url);
           if (url.hostname !== "asset")
             return new Response("Not found", { status: 404 });
           const image = repo.getImage(idSchema.parse(url.pathname.slice(1)));
-          const bytes = await readFile(join(dataDir, "assets", image.filename));
-          return new Response(bytes, {
+          const bytes = await readAsset(dataDir, image.filename);
+          return new Response(new Uint8Array(bytes), {
             headers: {
               "Content-Type": imageMime(bytes).mime,
               "Cache-Control": "private, max-age=86400",
@@ -826,8 +841,13 @@ if (hasLock) {
           )
             return { ok: false, error: "不支持的操作。" };
           try {
-            if (maintenance) throw new Error("正在迁移数据，请稍候再操作。");
-            return { ok: true, data: await handlers[action](payload, event) };
+            if (maintenance) throw new Error("正在备份或迁移数据，请稍候再操作。");
+            activeOperations++;
+            try {
+              return { ok: true, data: await handlers[action](payload, event) };
+            } finally {
+              activeOperations--;
+            }
           } catch (error) {
             let message =
               error instanceof Error ? error.message : "操作失败，请重试。";

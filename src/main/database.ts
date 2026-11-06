@@ -285,7 +285,8 @@ export class StoryRepository {
         .prepare("DELETE FROM settings WHERE key LIKE ?")
         .run("workflow.run." + id + ".%");
       this.db.prepare("DELETE FROM settings WHERE key = ? OR key LIKE ?").run(`development.undo.${id}`, `development.applied.${id}.%`);
-      return removeFiles;
+      const stillUsed = new Set(this.listImages().map((image) => image.filename));
+      return [...new Set(removeFiles)].filter((filename) => !stillUsed.has(filename));
     })();
   }
   listWorkflowTemplates(): WorkflowTemplate[] {
@@ -588,6 +589,11 @@ export class StoryRepository {
     this.db
       .prepare("INSERT INTO images VALUES (?, ?, ?)")
       .run(image.id, image.projectId, JSON.stringify(image));
+    return image;
+  }
+  updateImageFilename(id: string, filename: string) {
+    const image = { ...this.getImage(id), filename };
+    this.write("images", image);
     return image;
   }
   getSetting<T>(key: string, fallback: T): T {

@@ -1,13 +1,24 @@
 import { app, safeStorage, dialog } from "electron";
 import {
-  mkdirSync,
   readFileSync,
   existsSync,
   writeFileSync,
   renameSync,
   createWriteStream,
 } from "node:fs";
-import { mkdir, readdir, cp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  cp,
+  rm,
+  writeFile,
+  copyFile,
+  rename,
+  realpath,
+  lstat,
+} from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import type { Readable } from "node:stream";
 import { join, dirname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ZipFile } from "yazl";
@@ -19,6 +30,15 @@ import type {
   SoftwareSettings,
 } from "../shared/types";
 import { modelSelection } from "../shared/models";
+import { migrateLegacyAssets } from "./assets";
+import {
+  createDataDirectories,
+  assertDataLayoutSupported,
+  writeDataLayout,
+  DATA_LAYOUT_FILE,
+  CONTENT_DIRECTORIES,
+  TRANSFER_DIRECTORIES,
+} from "./data-layout";
 
 export const programDir = app.isPackaged
   ? process.env.PORTABLE_EXECUTABLE_DIR || dirname(process.execPath)
@@ -36,18 +56,21 @@ export function resolveDataDir(): string {
   return join(programDir, "data");
 }
 export function initializeDirectories(dataDir: string) {
-  for (const name of [
-    "database",
-    "assets",
-    "settings",
-    "backups",
-    "exports",
-    "runtime",
-  ])
-    mkdirSync(join(dataDir, name), { recursive: true });
+  createDataDirectories(dataDir);
   app.setPath("userData", join(dataDir, "runtime"));
   app.setPath("sessionData", join(dataDir, "runtime", "session"));
   app.setAppLogsPath(join(dataDir, "runtime", "logs"));
+}
+export async function upgradeDataLayout(
+  repo: StoryRepository,
+  dataDir: string,
+) {
+  assertDataLayoutSupported(dataDir);
+  const result = await migrateLegacyAssets(repo, dataDir, () =>
+    makeBackup(repo, dataDir),
+  );
+  await writeDataLayout(dataDir);
+  return result;
 }
 export function readKey(repo: StoryRepository, kind: "text" | "image"): string {
   const stored = repo.getSetting<string>(`${kind}.key`, "");
@@ -183,42 +206,106 @@ export async function makeBackup(
     staging = join(dataDir, "backups", `.staging-${id}`);
   await mkdir(join(staging, "database"), { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const destination = join(dataDir, "backups", `页间备份-${timestamp}.zip`);
+  const destination = join(
+    dataDir,
+    "backups",
+    `页间备份-${timestamp}-${id.slice(0, 8)}.zip`,
+  );
+  const partial = destination + ".partial";
   try {
     await repo.backup(join(staging, "database", "storybook.sqlite"));
     await writeFile(
       join(staging, "恢复说明.txt"),
-      "关闭页间后，将本备份中的 database 和 assets 文件夹复制到软件的 data 目录。覆盖前先备份原目录。API Key 明文保存在数据库中，随完整备份一起保存。\n",
+      "完全退出页间（包括系统托盘）后，先保留现有数据目录副本，再将本备份解压到一个新的数据目录。database、assets、settings 与 data-layout.json（若存在）必须来自同一份备份，不要合并不同快照或遗留的 SQLite -wal/-shm 文件。软件会自动识别并整理旧版图片目录。备份不包含 exports、历史备份和 runtime 缓存；如需保留这些文件，请在退出软件后另行复制。API Key 明文保存在数据库中，随完整备份一起保存。\n",
       "utf8",
     );
-    const archive = new ZipFile();
+    if (existsSync(join(dataDir, DATA_LAYOUT_FILE)))
+      await copyFile(
+        join(dataDir, DATA_LAYOUT_FILE),
+        join(staging, DATA_LAYOUT_FILE),
+      );
+    const files: { path: string; name: string }[] = [];
     async function addFolder(source: string, prefix: string) {
+      if ((await lstat(source)).isSymbolicLink())
+        throw new Error("备份目录不能包含符号链接或目录联接。");
       for (const entry of await readdir(source, { withFileTypes: true })) {
         const path = join(source, entry.name),
           name = prefix + entry.name;
+        if (entry.isSymbolicLink())
+          throw new Error("备份目录不能包含符号链接或目录联接。");
         if (entry.isDirectory()) await addFolder(path, name + "/");
-        else if (entry.isFile()) archive.addFile(path, name);
+        else if (entry.isFile()) files.push({ path, name });
       }
     }
     await addFolder(staging, "");
-    await addFolder(join(dataDir, "assets"), "assets/");
-    await new Promise<void>((resolveBackup, reject) => {
-      const output = createWriteStream(destination);
-      output.on("close", () => resolveBackup());
-      output.on("error", reject);
-      archive.on("error", reject);
-      archive.outputStream.on("error", reject);
-      archive.outputStream.pipe(output);
+    for (const name of CONTENT_DIRECTORIES)
+      if (existsSync(join(dataDir, name)))
+        await addFolder(join(dataDir, name), name + "/");
+    const archive = new ZipFile();
+    const output = createWriteStream(partial, { flags: "wx" });
+    const zipStream = archive.outputStream as Readable;
+    archive.on("error", (error) => zipStream.destroy(error));
+    const writing = pipeline(zipStream, output);
+    try {
+      for (const file of files) archive.addFile(file.path, file.name);
       archive.end();
-    });
+      await writing;
+    } catch (error) {
+      zipStream.destroy();
+      output.destroy();
+      await writing.catch(() => undefined);
+      throw error;
+    }
+    await rename(partial, destination);
     return destination;
   } finally {
+    await rm(partial, { force: true });
     await rm(staging, { recursive: true, force: true });
   }
 }
 function nested(a: string, b: string) {
   const part = relative(a, b);
   return part === "" || (!part.startsWith("..") && !isAbsolute(part));
+}
+
+// Copy durable content and user outputs; rebuild runtime at the destination.
+export async function copyDataSnapshot(
+  repo: StoryRepository,
+  dataDir: string,
+  target: string,
+) {
+  const sourcePath = await realpath(dataDir),
+    targetPath = await realpath(target);
+  if (nested(sourcePath, targetPath) || nested(targetPath, sourcePath))
+    throw new Error("新目录不能是当前数据目录、其上级或其内部目录。");
+  if ((await readdir(targetPath)).length)
+    throw new Error("请选择空文件夹。原数据将保留，不会覆盖其他文件。");
+  const staging = join(targetPath, `.migration-${randomUUID()}`);
+  try {
+    await mkdir(join(staging, "database"), { recursive: true });
+    await repo.backup(join(staging, "database", "storybook.sqlite"));
+    for (const name of TRANSFER_DIRECTORIES) {
+      if (!existsSync(join(sourcePath, name))) continue;
+      await cp(join(sourcePath, name), join(staging, name), {
+        recursive: true,
+        // Never follow or reproduce a link outside the portable data tree.
+        filter: async (source) => {
+          if ((await lstat(source)).isSymbolicLink())
+            throw new Error("迁移目录不能包含符号链接或目录联接。");
+          return true;
+        },
+      });
+    }
+    if (existsSync(join(sourcePath, DATA_LAYOUT_FILE)))
+      await copyFile(
+        join(sourcePath, DATA_LAYOUT_FILE),
+        join(staging, DATA_LAYOUT_FILE),
+      );
+    for (const name of await readdir(staging))
+      await rename(join(staging, name), join(targetPath, name));
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
 }
 export async function migrateData(
   repo: StoryRepository,
@@ -230,14 +317,7 @@ export async function migrateData(
   });
   if (result.canceled) return false;
   const target = resolve(result.filePaths[0]);
-  if (nested(dataDir, target) || nested(target, dataDir))
-    throw new Error("新目录不能是当前数据目录、其上级或其内部目录。");
-  if ((await readdir(target)).length)
-    throw new Error("请选择空文件夹。原数据将保留，不会覆盖其他文件。");
-  await mkdir(join(target, "database"), { recursive: true });
-  await repo.backup(join(target, "database", "storybook.sqlite"));
-  for (const name of ["assets", "settings", "backups", "exports"])
-    await cp(join(dataDir, name), join(target, name), { recursive: true });
+  await copyDataSnapshot(repo, dataDir, target);
   writeFileSync(
     locationFile + ".tmp",
     JSON.stringify({ dataDir: target }, null, 2),
