@@ -554,7 +554,7 @@ async function viewSource(revisionId: string | null) {
             >
               <h3>一句话开始故事</h3>
               <p class="field-help">角色、能力、世界或氛围，想到什么写什么。其余交给 AI，喜欢以后再完善。</p>
-              <NInput :value="store.detail.project.premise" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" placeholder="能操纵金属的旅人来到废土世界，开车一路冒险，其他你发挥。" :disabled="store.busy" @update:value="store.editProject({ premise: $event })" />
+              <NInput :value="store.detail.project.premise" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" placeholder="写下人物、背景或剧情关键词，其他细节可以自由发挥。" :disabled="store.busy" @update:value="store.editProject({ premise: $event })" />
               <div class="workbench-actions"><NButton type="primary" :disabled="store.busy" @click="store.safe(async () => { chooseTool('opening'); await store.runTask('opening', { instruction: '' }); })">直接生成开篇</NButton><NButton :disabled="store.busy" @click="chooseTool('develop')">先完善设定也可以</NButton></div>
             </section>
             <StoryEditor

@@ -292,7 +292,7 @@ async function create() {
           v-model:value="form.premise"
           type="textarea"
           :autosize="{ minRows: 3, maxRows: 6 }"
-          placeholder="例如：一个能操纵金属的人来到废土世界，开始一段公路冒险。没有更多设定也可以，之后边写边补。"
+          placeholder="写下主角、故事背景或想发生的事。没有完整设定也可以，之后边写边补。"
         />
         <label class="field-label"
           >AI 可以发挥多少？<small
