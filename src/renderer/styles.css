@@ -1123,6 +1123,12 @@ input {
   color: #6b7280;
   font-size: 12px;
 }
+.chapter-name-error {
+  margin: 10px 0;
+  color: #b91c1c;
+  font-size: 13px;
+  line-height: 1.7;
+}
 .chapter-main {
   min-width: 0;
   flex: 1;

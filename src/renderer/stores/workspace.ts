@@ -195,6 +195,16 @@ export const useWorkspace = defineStore("workspace", () => {
       id: current.id,
     });
   }
+  function renameChapter(id: string, title: string) {
+    const target = detail.value?.chapters.find(item => item.id === id);
+    if (!target) throw new Error("章节不存在或不属于当前故事。");
+    const name = title.trim();
+    if (!name || name.length > 500) throw new Error("章节名称需为 1—500 字。");
+    if (name === target.title) return;
+    target.title = name;
+    target.dirty = true;
+    enqueue("chapter:" + id, "chapter:update", { id, title: name });
+  }
   function scratch() {
     if (!detail.value) return;
     enqueue("scratch:" + detail.value.project.id, "scratch:save", {
@@ -578,6 +588,7 @@ export const useWorkspace = defineStore("workspace", () => {
     editProject,
     editSettings,
     editChapter,
+    renameChapter,
     openProject,
     refreshProject,
     switchChapter,

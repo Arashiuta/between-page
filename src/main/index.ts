@@ -7,6 +7,7 @@ import { z } from "zod";
 import { StoryRepository } from "./database";
 import { chat, generateImage, listModels, type Connection } from "./provider";
 import { buildTask, parseMemories } from "./prompts";
+import { buildChapterTitleMessages, parseChapterTitle } from "./chapter-title";
 import {
   importTextDocument,
   buildMaterialMessages,
@@ -67,7 +68,7 @@ const shortText = z.string().max(500);
 const longText = z.string().max(200_000);
 const kindSchema = z.enum(["character", "world", "inspiration"]);
 const taskKindSchema = z.enum(taskKinds);
-const roleIdSchema = z.enum([...taskKinds, "material"]);
+const roleIdSchema = z.enum([...taskKinds, "material", "title"]);
 const freedomSchema = z.enum(["guided", "balanced", "free"]);
 const sourceDocumentSchema = z.object({
   id: idSchema,
@@ -488,6 +489,20 @@ const handlers: Record<
       () => {},
     );
     return output.slice(0, 200);
+  },
+  "ai:chapter-title": async (p) => {
+    const request = z.object({ requestId: idSchema, projectId: idSchema, chapterId: idSchema }).parse(p);
+    if (jobs.has(request.requestId)) throw new Error("任务已经开始。");
+    const messages = buildChapterTitleMessages(repo, request.projectId, request.chapterId);
+    const controller = new AbortController();
+    jobs.set(request.requestId, controller);
+    try {
+      const text = await chat(connectionForRole("title"), messages, () => {}, controller.signal);
+      if (controller.signal.aborted) throw new Error("已停止生成章节名称。");
+      return { title: parseChapterTitle(text) };
+    } finally {
+      jobs.delete(request.requestId);
+    }
   },
   "ai:run": async (p, event) => {
     const request: TaskRequest = taskSchema.parse(p);

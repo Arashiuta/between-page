@@ -161,7 +161,7 @@ export interface MaterialDraft {
   sections: Omit<CardSection, "id">[];
   questions: string[];
 }
-export type RoleId = TaskKind | "material";
+export type RoleId = TaskKind | "material" | "title";
 export interface AIRole {
   id: RoleId;
   prompt: string;

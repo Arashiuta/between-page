@@ -25,12 +25,15 @@ import {
   Trash2,
   ArrowUp,
   ArrowDown,
+  Pencil,
+  Sparkles,
 } from "lucide-vue-next";
 import StoryEditor from "../components/StoryEditor.vue";
 import CardEditor from "../components/CardEditor.vue";
 import ImagePanel from "../components/ImagePanel.vue";
 import WorkbenchPanel from "../components/WorkbenchPanel.vue";
 import DevelopmentReview from "../components/DevelopmentReview.vue";
+import ChapterTitleDialog from "../components/ChapterTitleDialog.vue";
 import { useWorkspace } from "../stores/workspace";
 import type { Card, Chapter, Revision, MemoryKind } from "../../shared/types";
 import { memoryLabels } from "../../shared/types";
@@ -58,9 +61,21 @@ const memoryModal = ref(false),
   confirmApply = ref<null | "replace" | "outline">(null);
 const importKind = ref<"all" | "character" | "world">("all");
 const chapterMenu = ref({ id: "", x: 0, y: 0, show: false });
+const chapterToRename = ref("");
+const generateChapterName = ref(false);
 const chapterToDelete = ref<Pick<Chapter, "id" | "title" | "acceptedRevisionId"> | null>(null);
 const deletingChapter = ref(false);
 const chapterMenuOptions = computed(() => [{
+  key: "rename",
+  label: "编辑名称",
+  icon: () => h(Pencil, { size: 15 }),
+  disabled: deletingChapter.value,
+}, {
+  key: "generate-title",
+  label: "AI 生成名称",
+  icon: () => h(Sparkles, { size: 15 }),
+  disabled: store.busy || store.imageBusy || deletingChapter.value || !store.detail?.chapters.some(item => item.id === chapterMenu.value.id && (item.content.trim() || item.plan.trim())),
+}, {
   key: "delete",
   label: "删除章节",
   icon: () => h(Trash2, { size: 15 }),
@@ -73,6 +88,10 @@ function openChapterMenu(event: MouseEvent, chapter: Chapter) {
 function selectChapterMenu(key: string) {
   const chapter = store.detail?.chapters.find((item) => item.id === chapterMenu.value.id);
   chapterMenu.value.show = false;
+  if ((key === "rename" || key === "generate-title") && chapter) {
+    generateChapterName.value = key === "generate-title";
+    chapterToRename.value = chapter.id;
+  }
   if (key === "delete" && chapter)
     chapterToDelete.value = { id: chapter.id, title: chapter.title, acceptedRevisionId: chapter.acceptedRevisionId };
 }
@@ -126,6 +145,7 @@ watch(
   async (id) => {
     chapterMenu.value.show = false;
     chapterToDelete.value = null;
+    chapterToRename.value = "";
     cardToDelete.value = null;
     cardToLibrary.value = null;
     loading.value = true;
@@ -815,6 +835,12 @@ async function viewSource(revisionId: string | null) {
       <WorkbenchPanel @apply="apply" />
     </div>
     <DevelopmentReview />
+    <ChapterTitleDialog
+      :show="!!chapterToRename"
+      :chapter-id="chapterToRename"
+      :generate-on-open="generateChapterName"
+      @update:show="value => { if (!value) chapterToRename = ''; }"
+    />
     <CardEditor
       v-model:show="cardModal"
       :card="editingCard"
