@@ -22,6 +22,8 @@ import {
 } from "lucide-vue-next";
 import { useWorkspace } from "./stores/workspace";
 import brandMark from "./assets/brand-mark.svg";
+import { freedomOptions } from "../shared/creation";
+import type { CreativeFreedom } from "../shared/types";
 const store = useWorkspace(),
   route = useRoute(),
   router = useRouter();
@@ -32,6 +34,7 @@ const form = ref({
   title: "",
   premise: "",
   mode: "explore" as "explore" | "novel",
+  creativeFreedom: "free" as CreativeFreedom,
   genre: "",
   cardIds: [] as string[],
 });
@@ -89,19 +92,16 @@ function showCreate() {
     title: "",
     premise: "",
     mode: "explore",
+    creativeFreedom: "free",
     genre: "",
     cardIds: [],
   };
   newStory.value = true;
 }
 async function create() {
-  if (!form.value.title.trim()) {
-    store.notify("给故事起一个名字吧。", "info");
-    return;
-  }
   creating.value = true;
   await store.safe(async () => {
-    const p = await store.createProject(form.value);
+    const p = await store.createProject({ ...form.value, title: form.value.title.trim() || "未命名故事" });
     newStory.value = false;
     await router.push("/story/" + p.id);
   });
@@ -253,7 +253,7 @@ async function create() {
         <label class="field-label">故事名称</label
         ><NInput
           v-model:value="form.title"
-          placeholder="输入故事名称"
+          placeholder="可以稍后再取名"
           :maxlength="100"
           autofocus
           @keyup.enter="create"
@@ -262,13 +262,13 @@ async function create() {
         <div class="mode-options">
           <button
             :class="{ selected: form.mode === 'explore' }"
-            @click="form.mode = 'explore'"
+            @click="form.mode = 'explore'; form.creativeFreedom = 'free'"
           >
             <Feather :size="21" /><strong>自由探索</strong
             ><span>跟随角色，看看接下来会发生什么</span></button
           ><button
             :class="{ selected: form.mode === 'novel' }"
-            @click="form.mode = 'novel'"
+            @click="form.mode = 'novel'; form.creativeFreedom = 'balanced'"
           >
             <BookOpen :size="21" /><strong>长篇创作</strong
             ><span>从整体构思，走向完整的作品</span>
@@ -280,8 +280,10 @@ async function create() {
           v-model:value="form.premise"
           type="textarea"
           :autosize="{ minRows: 3, maxRows: 6 }"
-          placeholder="例如：让我的 OC 经营一家只在深夜营业的书店，有一天，店里来了一位认识他过去的客人……"
+          placeholder="例如：一个能操纵金属的人来到废土世界，开始一段公路冒险。没有更多设定也可以，之后边写边补。"
         />
+        <label class="field-label">AI 可以发挥多少？<small>创作中随时可调整，明确设定始终优先</small></label>
+        <NSelect v-model:value="form.creativeFreedom" :options="freedomOptions" />
         <label class="field-label"
           >带上你的角色与世界观<small>可选，将复制到本故事</small></label
         ><NSelect

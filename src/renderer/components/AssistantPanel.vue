@@ -59,6 +59,8 @@ const options = [
   { label: "构思本章插画", value: "prompt" },
 ];
 const hints: Record<TaskKind, string> = {
+  opening: "给出角色、能力或世界关键词，直接开始故事。",
+  develop: "从已有故事完善人物、世界与蓝图。",
   chapter: "希望这一章发生什么？也可以留空，按本章计划继续。",
   outline: "故事想往哪里走？有哪些人物变化、冲突或结局想看到？",
   adjust: "例如：让他们逐渐失去信任，但保留之前真诚的关系。",

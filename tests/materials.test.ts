@@ -285,7 +285,7 @@ describe("整理职责与写作参考", () => {
       chapterId: chapter.id,
       instruction: "",
     });
-    expect(task.messages[0].content).toBe(rolePrompt(settings, "chapter"));
+    expect(task.messages[0].content).toContain(rolePrompt(settings, "chapter"));
     expect(task.messages[0].content).toContain("第一人称");
     expect(
       roleSettings(database).roles.find((role) => role.id === "chapter")?.model,

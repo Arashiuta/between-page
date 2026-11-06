@@ -15,9 +15,13 @@ import type {
   CardInput,
   RoleSettings,
   MemoryKind,
+  CreativeFreedom,
+  StoryDevelopmentDraft,
 } from "../../shared/types";
 import { defaultRoleSettings } from "../../shared/roles";
 import { documentToText } from "../../shared/document";
+import { toolInfo } from "../../shared/tools";
+import { developmentText } from "../../shared/development";
 
 export const useWorkspace = defineStore("workspace", () => {
   const ready = ref(false),
@@ -41,6 +45,9 @@ export const useWorkspace = defineStore("workspace", () => {
     memoryRecords = ref<{ kind: MemoryKind; content: string }[] | null>(null),
     memoryRevisionId = ref(""),
     taskError = ref("");
+  const developmentDraft = ref<StoryDevelopmentDraft | null>(null);
+  const reviewingDevelopment = ref(false);
+  const developmentUndoId = ref("");
   const selection = ref<{ text: string; from: number; to: number } | null>(
       null,
     ),
@@ -61,6 +68,7 @@ export const useWorkspace = defineStore("workspace", () => {
   let saveTimer: ReturnType<typeof setTimeout> | undefined,
     toastTimer: ReturnType<typeof setTimeout> | undefined,
     flushing: Promise<void> | null = null;
+  let generationProjectId = "";
   const api = <T>(action: string, payload?: unknown) =>
     window.storybook.invoke<T>(
       action,
@@ -196,6 +204,9 @@ export const useWorkspace = defineStore("workspace", () => {
       output: output.value,
       chapterId: outputChapterId.value,
       memoryRecords: memoryRecords.value,
+      developmentDraft: developmentDraft.value,
+      selectedTool: taskKind.value,
+      developmentUndoId: developmentUndoId.value,
       ...(memoryRevisionId.value
         ? { memoryRevisionId: memoryRevisionId.value }
         : {}),
@@ -214,6 +225,9 @@ export const useWorkspace = defineStore("workspace", () => {
       chapterId: string;
       memoryRecords?: { kind: MemoryKind; content: string }[] | null;
       memoryRevisionId?: string;
+      developmentDraft?: StoryDevelopmentDraft | null;
+      selectedTool?: TaskKind;
+      developmentUndoId?: string;
       outputSelection?: { text: string; from: number; to: number } | null;
     } | null>("scratch:get", id);
     output.value = saved?.output || "";
@@ -222,6 +236,14 @@ export const useWorkspace = defineStore("workspace", () => {
     outputChapterId.value = saved?.chapterId || "";
     memoryRecords.value = saved?.memoryRecords ?? null;
     memoryRevisionId.value = saved?.memoryRevisionId || "";
+    developmentDraft.value = saved?.developmentDraft ?? null;
+    taskKind.value =
+      saved?.selectedTool ||
+      (detail.value.chapters.some((item) => item.content.trim())
+        ? "chapter"
+        : "opening");
+    reviewingDevelopment.value = false;
+    developmentUndoId.value = saved?.developmentUndoId ?? "";
     outputSelection.value = saved?.outputSelection ?? null;
     taskError.value = "";
   }
@@ -240,11 +262,11 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   async function newChapter() {
     if (!detail.value) return;
+    const projectId = detail.value.project.id;
     await flush();
-    const created = await api<Chapter>(
-      "chapter:create",
-      detail.value.project.id,
-    );
+    if (detail.value?.project.id !== projectId) return;
+    const created = await api<Chapter>("chapter:create", projectId);
+    if (detail.value?.project.id !== projectId) return;
     detail.value.chapters.push(created);
     chapterId.value = created.id;
     selection.value = null;
@@ -257,12 +279,15 @@ export const useWorkspace = defineStore("workspace", () => {
     await flush();
     if (busy.value || imageBusy.value)
       throw new Error("请先停止或等待当前生成任务完成，再删除章节。");
-    const index = detail.value?.chapters.findIndex((item) => item.id === id) ?? 0;
+    const index =
+      detail.value?.chapters.findIndex((item) => item.id === id) ?? 0;
     const updated = await api<ProjectDetail>("chapter:delete", id);
     if (detail.value?.project.id !== target.projectId) return;
     detail.value = updated;
     if (!updated.chapters.some((item) => item.id === chapterId.value)) {
-      chapterId.value = updated.chapters[Math.min(index, updated.chapters.length - 1)]?.id || "";
+      chapterId.value =
+        updated.chapters[Math.min(index, updated.chapters.length - 1)]?.id ||
+        "";
       selection.value = null;
     }
     if (outputChapterId.value === id) {
@@ -273,10 +298,14 @@ export const useWorkspace = defineStore("workspace", () => {
       memoryRevisionId.value = "";
       taskError.value = "";
     }
-    images.value = images.value.map((image) => image.chapterId === id
-      ? { ...image, chapterId: null, revisionId: null }
-      : image);
-    const project = projects.value.find((item) => item.id === updated.project.id);
+    images.value = images.value.map((image) =>
+      image.chapterId === id
+        ? { ...image, chapterId: null, revisionId: null }
+        : image,
+    );
+    const project = projects.value.find(
+      (item) => item.id === updated.project.id,
+    );
     if (project) Object.assign(project, updated.project);
     notify(`已删除「${target.title}」。`);
   }
@@ -289,39 +318,57 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   async function runTask(
     kind: TaskKind = taskKind.value,
-    options: { instruction?: string; workflowContext?: string; chapterId?: string } = {},
+    options: {
+      instruction?: string;
+      workflowContext?: string;
+      chapterId?: string;
+      newChapter?: boolean;
+    } = {},
   ) {
     if (!detail.value || busy.value) return;
-    await flush();
-    output.value = "";
-    memoryRecords.value = null;
-    memoryRevisionId.value = "";
-    taskError.value = "";
+    const projectId = detail.value.project.id;
+    generationProjectId = projectId;
     busy.value = true;
+    taskError.value = "";
     requestId.value = crypto.randomUUID();
-    outputKind.value = kind;
-    const targetChapterId = options.chapterId || chapter.value?.id || "";
-    outputChapterId.value = targetChapterId;
-    outputSelection.value = targetChapterId === chapter.value?.id && selection.value
-      ? { ...selection.value }
-      : null;
-    const selected = outputSelection.value?.text;
-    scratch();
     try {
+      if (
+        options.newChapter ||
+        (["opening", "chapter"].includes(kind) && !chapter.value)
+      )
+        await newChapter();
+      await flush();
+      if (detail.value?.project.id !== projectId) return;
+      output.value = "";
+      memoryRecords.value = null;
+      memoryRevisionId.value = "";
+      developmentDraft.value = null;
+      outputKind.value = kind;
+      taskKind.value = kind;
+      const targetChapterId = options.chapterId || chapter.value?.id || "";
+      outputChapterId.value = targetChapterId;
+      outputSelection.value =
+        targetChapterId === chapter.value?.id && selection.value
+          ? { ...selection.value }
+          : null;
+      const selected = outputSelection.value?.text;
+      scratch();
       const result = await api<TaskResult>("ai:run", {
         requestId: requestId.value,
         kind,
-        projectId: detail.value.project.id,
+        projectId,
         chapterId: targetChapterId || undefined,
         instruction: options.instruction ?? instruction.value,
         selection: selected,
         workflowContext: options.workflowContext,
       });
+      if (detail.value?.project.id !== projectId) return;
       requestId.value = "";
       output.value = result.text;
       memoryRecords.value = result.memoryRecords ?? null;
       memoryRevisionId.value = result.memoryRevisionId ?? "";
-      if (["outline", "adjust", "organize", "brainstorm", "pacing", "arc"].includes(kind) && result.text.trim()) {
+      developmentDraft.value = result.developmentDraft ?? null;
+      if (toolInfo[kind].candidate && result.text.trim()) {
         const labels: Partial<Record<TaskKind, string>> = {
           outline: "故事蓝图候选",
           adjust: "走向调整候选",
@@ -329,6 +376,7 @@ export const useWorkspace = defineStore("workspace", () => {
           brainstorm: "脑暴候选",
           pacing: "节奏诊断候选",
           arc: "人物弧线候选",
+          develop: "设定与蓝图建议",
         };
         const candidate = {
           id: crypto.randomUUID(),
@@ -336,20 +384,109 @@ export const useWorkspace = defineStore("workspace", () => {
           content: result.text,
           source: kind,
           createdAt: new Date().toISOString(),
+          ...(result.developmentDraft
+            ? { development: result.developmentDraft }
+            : {}),
         };
-        editProject({ blueprintCandidates: [candidate, ...(detail.value!.project.blueprintCandidates || [])].slice(0, 100) });
+        editProject({
+          blueprintCandidates: [
+            candidate,
+            ...(detail.value!.project.blueprintCandidates || []),
+          ].slice(0, 100),
+        });
       }
     } catch (error) {
-      taskError.value = error instanceof Error ? error.message : String(error);
+      if (detail.value?.project.id === projectId)
+        taskError.value =
+          error instanceof Error ? error.message : String(error);
     } finally {
       requestId.value = "";
       busy.value = false;
-      scratch();
-      void safe(flush);
+      generationProjectId = "";
+      if (detail.value?.project.id === projectId) {
+        scratch();
+        void safe(flush);
+      }
     }
   }
   async function stopTask() {
     if (requestId.value) await api("ai:cancel", requestId.value);
+  }
+  function reviewDevelopment(draft: StoryDevelopmentDraft) {
+    if (busy.value || draft.projectId !== detail.value?.project.id) return;
+    developmentDraft.value = JSON.parse(JSON.stringify(draft));
+    outputKind.value = "develop";
+    taskKind.value = "develop";
+    output.value = developmentText(draft);
+    outputChapterId.value = chapter.value?.id ?? "";
+    outputSelection.value = null;
+    memoryRecords.value = null;
+    memoryRevisionId.value = "";
+    taskError.value = "";
+    reviewingDevelopment.value = true;
+    scratch();
+  }
+  function editDevelopment(draft: StoryDevelopmentDraft) {
+    if (!detail.value || draft.projectId !== detail.value.project.id) return;
+    developmentDraft.value = JSON.parse(JSON.stringify(draft));
+    if (outputKind.value === "develop") output.value = developmentText(draft);
+    editProject({
+      blueprintCandidates: detail.value.project.blueprintCandidates.map(
+        (candidate) =>
+          candidate.development?.id === draft.id
+            ? {
+                ...candidate,
+                content: developmentText(draft),
+                development: JSON.parse(JSON.stringify(draft)),
+              }
+            : candidate,
+      ),
+    });
+    scratch();
+  }
+  async function applyDevelopmentChanges(
+    draft: StoryDevelopmentDraft,
+    selectedIds: string[],
+  ) {
+    if (!detail.value || busy.value) return false;
+    const projectId = detail.value.project.id;
+    await flush();
+    if (detail.value?.project.id !== projectId) return false;
+    const result = await api<{
+      detail: ProjectDetail;
+      draft: StoryDevelopmentDraft;
+      undoId: string;
+    }>("story:apply-development", { projectId, draft, selectedIds });
+    if (detail.value?.project.id !== projectId) return false;
+    detail.value = result.detail;
+    developmentDraft.value = result.draft;
+    if (outputKind.value === "develop")
+      output.value = developmentText(result.draft);
+    developmentUndoId.value = result.undoId;
+    scratch();
+    await flush();
+    notify("已更新选中的蓝图与资料分区，后续创作会参考这些内容。");
+    return true;
+  }
+  async function undoDevelopmentChanges() {
+    if (!detail.value || !developmentUndoId.value || busy.value) return;
+    const projectId = detail.value.project.id;
+    const undoId = developmentUndoId.value;
+    await flush();
+    if (detail.value?.project.id !== projectId) return;
+    const result = await api<{
+      detail: ProjectDetail;
+      draft: StoryDevelopmentDraft;
+    }>("story:undo-development", { projectId, undoId });
+    if (detail.value?.project.id !== projectId) return;
+    detail.value = result.detail;
+    developmentDraft.value = result.draft;
+    if (outputKind.value === "develop")
+      output.value = developmentText(result.draft);
+    developmentUndoId.value = "";
+    scratch();
+    await flush();
+    notify("已撤销本次设定与蓝图更新。");
   }
   async function setModel(kind: "text" | "image", model: string) {
     await flush();
@@ -365,13 +502,16 @@ export const useWorkspace = defineStore("workspace", () => {
     const deleted = await api<Card>("card:delete", id);
     cards.value = cards.value.filter((card) => card.id !== deleted.id);
     if (detail.value)
-      detail.value.cards = detail.value.cards.filter((card) => card.id !== deleted.id);
+      detail.value.cards = detail.value.cards.filter(
+        (card) => card.id !== deleted.id,
+      );
     notify(`已删除资料「${deleted.name}」。`);
   }
   async function createProject(value: {
     title: string;
     premise: string;
     mode: "explore" | "novel";
+    creativeFreedom?: CreativeFreedom;
     genre?: string;
     cardIds?: string[];
   }) {
@@ -384,7 +524,11 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   function initializeListeners() {
     window.storybook.onProgress((event) => {
-      if (busy.value && event.requestId === requestId.value) {
+      if (
+        busy.value &&
+        event.requestId === requestId.value &&
+        detail.value?.project.id === generationProjectId
+      ) {
         output.value += event.delta;
         scratch();
       }
@@ -419,6 +563,9 @@ export const useWorkspace = defineStore("workspace", () => {
     outputChapterId,
     memoryRecords,
     memoryRevisionId,
+    developmentDraft,
+    reviewingDevelopment,
+    developmentUndoId,
     outputSelection,
     taskError,
     selection,
@@ -439,6 +586,10 @@ export const useWorkspace = defineStore("workspace", () => {
     adopt,
     runTask,
     stopTask,
+    reviewDevelopment,
+    editDevelopment,
+    applyDevelopmentChanges,
+    undoDevelopmentChanges,
     setModel,
     saveCard,
     deleteCard,

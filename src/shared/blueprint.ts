@@ -4,7 +4,7 @@ export const blueprintDefaults: Pick<BlueprintSection, "id" | "title">[] = [
   { id: "core-conflict", title: "核心冲突" },
   { id: "character-arcs", title: "角色弧线" },
   { id: "story-phases", title: "阶段推进" },
-  { id: "foreshadowing", title: "伏笔" },
+  { id: "foreshadowing", title: "铺垫与回收计划" },
   { id: "open-questions", title: "待确认事项" },
 ];
 
@@ -28,6 +28,7 @@ export function normalizeProject(project: Project): Project {
   }
   return {
     ...project,
+    creativeFreedom: project.creativeFreedom ?? "balanced",
     outline: "",
     blueprintSections: sections,
     blueprintCandidates: project.blueprintCandidates || [],

@@ -2,20 +2,12 @@ export type Mode = "explore" | "novel";
 export type CardKind = "character" | "world" | "inspiration";
 export type MemoryKind =
   "fact" | "state" | "relationship" | "knowledge" | "foreshadow" | "summary";
-export type TaskKind =
-  | "chapter"
-  | "outline"
-  | "adjust"
-  | "check"
-  | "notes"
-  | "prompt"
-  | "revise"
-  | "organize"
-  | "brainstorm"
-  | "scene"
-  | "dialogue"
-  | "pacing"
-  | "arc";
+export const taskKinds = [
+  "opening", "chapter", "develop", "outline", "adjust", "check", "notes",
+  "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc",
+] as const;
+export type TaskKind = typeof taskKinds[number];
+export type CreativeFreedom = "guided" | "balanced" | "free";
 export interface BlueprintSection {
   id: string;
   title: string;
@@ -27,6 +19,28 @@ export interface BlueprintCandidate {
   content: string;
   source: TaskKind;
   createdAt: string;
+  development?: StoryDevelopmentDraft;
+}
+export interface DevelopmentChange {
+  id: string;
+  target: "blueprint" | "character" | "world";
+  targetId: string;
+  sectionId: string;
+  name: string;
+  title: string;
+  content: string;
+  mode: "append" | "replace";
+  basis: "established" | "proposal";
+  sources: { revisionId: string; quote: string }[];
+  base: string | null;
+}
+export interface StoryDevelopmentDraft {
+  id: string;
+  projectId: string;
+  summary: string;
+  changes: DevelopmentChange[];
+  warnings: string[];
+  appliedIds: string[];
 }
 export interface WorkflowStep {
   id: string;
@@ -75,6 +89,7 @@ export interface Project {
   title: string;
   premise: string;
   mode: Mode;
+  creativeFreedom?: CreativeFreedom;
   genre: string;
   world: string;
   style: string;
@@ -241,6 +256,7 @@ export interface TaskResult {
   notesSaved?: number;
   memoryRecords?: { kind: MemoryKind; content: string }[];
   memoryRevisionId?: string;
+  developmentDraft?: StoryDevelopmentDraft;
 }
 export interface ImageRequest {
   projectId: string;
@@ -264,6 +280,6 @@ export const memoryLabels: Record<MemoryKind, string> = {
   state: "人物状态",
   relationship: "关系变化",
   knowledge: "秘密与认知",
-  foreshadow: "伏笔与承诺",
+  foreshadow: "已埋伏笔与承诺",
   summary: "章节摘要",
 };

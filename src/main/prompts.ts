@@ -6,11 +6,15 @@ import { memoryLabels, type MaterialCoverage } from "../shared/types";
 import { rolePrompt } from "../shared/roles";
 import { roleSettings } from "./roles";
 import { buildMaterialContext } from "./materials";
+import { creationPolicy } from "../shared/creation";
+import { buildDevelopmentContext, type DevelopmentSnapshot } from "./development";
 
 const clip = (value: string, length: number) =>
   value.length > length
     ? value.slice(0, length) + "\n[资料过长，已截取]"
     : value;
+const draftExcerpt = (value: string) => value.length <= 18000 ? value
+  : `${value.slice(0, 2000)}\n[草稿中段省略，以下为最近正文，请从结尾衔接]\n${value.slice(-16000)}`;
 
 export function buildTask(
   repo: StoryRepository,
@@ -21,6 +25,7 @@ export function buildTask(
   chapterId?: string;
   coverage: MaterialCoverage[];
   omitted: number;
+  developmentSnapshot?: DevelopmentSnapshot;
 } {
   const detail = repo.getDetail(request.projectId);
   const chapter = request.chapterId
@@ -29,7 +34,7 @@ export function buildTask(
   if (request.chapterId && !chapter)
     throw new Error("当前章节不属于这个故事。");
   if (
-    ["chapter", "check", "notes", "revise"].includes(request.kind) &&
+    ["opening", "chapter", "check", "notes", "revise"].includes(request.kind) &&
     !chapter
   )
     throw new Error("请先选择一个章节。");
@@ -44,7 +49,8 @@ export function buildTask(
     revisionId = revision.id;
     source = `\n【本次记忆来源：${revision.title}，版本 ${revision.id}】\n${clip(revision.content, 40_000)}`;
   }
-  const cutoff = chapter?.position ?? Number.MAX_SAFE_INTEGER;
+  const storyScope = ["develop", "outline", "adjust", "brainstorm", "organize", "arc"].includes(request.kind);
+  const cutoff = storyScope ? Number.MAX_SAFE_INTEGER : chapter?.position ?? Number.MAX_SAFE_INTEGER;
   const validChapters = detail.chapters.filter(
     (c) => c.position < cutoff && c.acceptedRevisionId && !c.needsReview,
   );
@@ -88,6 +94,10 @@ export function buildTask(
       return `【已采用：${revision.title}】\n${clip(revision.content.slice(-4_000), 4_000)}`;
     })
     .join("\n\n");
+  const draftContinuity = ["opening", "chapter", "scene"].includes(request.kind) && chapter
+    ? detail.chapters.filter(item => item.position < chapter.position && !item.acceptedRevisionId && item.content.trim()).slice(-2)
+      .map(item => `【前章草稿：${item.title}，尚未采用，仅供续写衔接，不计正式记忆】\n${clip(item.content.slice(-6000), 6000)}`).join("\n\n")
+    : "";
   const materials = buildMaterialContext(
     detail.cards,
     [
@@ -102,6 +112,7 @@ export function buildTask(
       .join("\n"),
   );
   const project = detail.project;
+  const development = request.kind === "develop" ? buildDevelopmentContext(repo, detail) : undefined;
   const context = [
     `故事：${project.title}\n模式：${project.mode === "explore" ? "自由探索" : "长篇创作"}\n类型：${project.genre}`,
     `【作者的故事想法】\n${clip(project.premise, 6000)}`,
@@ -112,8 +123,10 @@ export function buildTask(
     ].filter(Boolean).join("\n\n"), 16000)}`,
     `【有效记忆，有来源】\n${memoryText || "尚无有效记录。"}`,
     `【近期已采用正文】\n${recent || "这是故事的开始。"}`,
+    development?.text,
+    draftContinuity,
     chapter
-      ? `【当前章节】${chapter.title}\n本章计划：${clip(chapter.plan, 4000)}\n【当前草稿，尚未自动计入正式记忆】\n${request.kind === "notes" ? "记忆提取仅使用下方采用版本。" : clip(chapter.content, 18000)}`
+      ? `【当前章节】${chapter.title}\n本章计划：${clip(chapter.plan, 4000)}\n【当前草稿，尚未自动计入正式记忆】\n${request.kind === "notes" ? "记忆提取仅使用下方采用版本。" : draftExcerpt(chapter.content)}`
       : "",
     request.selection
       ? `【作者选中的片段】\n${clip(request.selection, 12000)}`
@@ -128,7 +141,7 @@ export function buildTask(
     messages: [
       {
         role: "system",
-        content: rolePrompt(roleSettings(repo), request.kind),
+        content: [rolePrompt(roleSettings(repo), request.kind), creationPolicy(project, request.kind)].filter(Boolean).join("\n\n"),
       },
       { role: "user", content: context },
     ],
@@ -136,6 +149,7 @@ export function buildTask(
     chapterId: chapter?.id,
     coverage: materials.coverage,
     omitted: materials.omitted,
+    developmentSnapshot: development?.snapshot,
   };
 }
 export function parseMemories(text: string) {

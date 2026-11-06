@@ -16,6 +16,9 @@ import { roleSettings } from "./roles";
 import { effectiveRole, roleDefinitions } from "../shared/roles";
 import { materialLimits } from "../shared/materials";
 import { builtinWorkflowTemplates } from "../shared/workflows";
+import { taskKinds } from "../shared/types";
+import { developmentDraftSchema, developmentText } from "../shared/development";
+import { applyDevelopment, parseDevelopment, undoDevelopment } from "./development";
 import {
   resolveDataDir,
   initializeDirectories,
@@ -63,22 +66,9 @@ const idSchema = z.string().uuid();
 const shortText = z.string().max(500);
 const longText = z.string().max(200_000);
 const kindSchema = z.enum(["character", "world", "inspiration"]);
-const roleIdSchema = z.enum([
-  "chapter",
-  "outline",
-  "adjust",
-  "check",
-  "notes",
-  "prompt",
-  "revise",
-  "organize",
-  "brainstorm",
-  "scene",
-  "dialogue",
-  "pacing",
-  "arc",
-  "material",
-]);
+const taskKindSchema = z.enum(taskKinds);
+const roleIdSchema = z.enum([...taskKinds, "material"]);
+const freedomSchema = z.enum(["guided", "balanced", "free"]);
 const sourceDocumentSchema = z.object({
   id: idSchema,
   name: shortText.trim().min(1),
@@ -142,21 +132,7 @@ function connectionForRole(id: RoleId): Connection {
 }
 const taskSchema = z.object({
   requestId: idSchema,
-  kind: z.enum([
-    "chapter",
-    "outline",
-    "adjust",
-    "check",
-    "notes",
-    "prompt",
-    "revise",
-    "organize",
-    "brainstorm",
-    "scene",
-    "dialogue",
-    "pacing",
-    "arc",
-  ]),
+  kind: taskKindSchema,
   projectId: idSchema,
   chapterId: idSchema.optional(),
   instruction: longText,
@@ -188,26 +164,15 @@ const handlers: Record<
     const v = z
       .object({
         projectId: idSchema,
-        kind: z.enum([
-          "chapter",
-          "outline",
-          "adjust",
-          "check",
-          "notes",
-          "prompt",
-          "revise",
-          "organize",
-          "brainstorm",
-          "scene",
-          "dialogue",
-          "pacing",
-          "arc",
-        ]),
+        kind: taskKindSchema,
         instruction: longText,
         output: z.string().max(1_000_000),
         chapterId: z.string().max(40),
         memoryRecords: z.array(z.object({ kind: memoryKindSchema, content: z.string().max(3000) })).max(24).nullable().optional(),
         memoryRevisionId: idSchema.or(z.literal("")).optional(),
+        developmentDraft: developmentDraftSchema.nullable().optional(),
+        selectedTool: taskKindSchema.optional(),
+        developmentUndoId: idSchema.or(z.literal("")).optional(),
         outputSelection: z.object({
           text: z.string().max(500_000),
           from: z.number().int().min(0),
@@ -226,6 +191,7 @@ const handlers: Record<
           title: shortText.trim().min(1),
           premise: longText,
           mode: z.enum(["explore", "novel"]),
+          creativeFreedom: freedomSchema.optional(),
           genre: shortText.optional(),
           cardIds: z.array(idSchema).max(100).optional(),
         })
@@ -238,6 +204,7 @@ const handlers: Record<
         title: shortText.trim().min(1).optional(),
         premise: longText.optional(),
         mode: z.enum(["explore", "novel"]).optional(),
+        creativeFreedom: freedomSchema.optional(),
         genre: shortText.optional(),
         world: longText.optional(),
         style: longText.optional(),
@@ -251,8 +218,9 @@ const handlers: Record<
           id: idSchema,
           title: shortText.trim().min(1),
           content: z.string().max(1_000_000),
-          source: z.enum(["chapter", "outline", "adjust", "check", "notes", "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc"]),
+          source: taskKindSchema,
           createdAt: z.string().max(40),
+          development: developmentDraftSchema.optional(),
         })).max(100).optional(),
         archived: z.boolean().optional(),
       })
@@ -276,7 +244,7 @@ const handlers: Record<
       builtin: z.boolean().optional(),
       steps: z.array(z.object({
         id: z.string().min(1).max(100),
-        kind: z.enum(["chapter", "outline", "adjust", "check", "notes", "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc"]),
+        kind: taskKindSchema,
         title: shortText.trim().min(1),
         instruction: longText,
       })).min(1).max(20),
@@ -293,7 +261,7 @@ const handlers: Record<
       chapterId: z.string().max(40),
       steps: z.array(z.object({
         id: z.string().max(100),
-        kind: z.enum(["chapter", "outline", "adjust", "check", "notes", "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc"]),
+        kind: taskKindSchema,
         title: shortText,
         instruction: longText,
       })).min(1).max(20),
@@ -318,6 +286,14 @@ const handlers: Record<
     return repo.saveWorkflowRun(run);
   },
   "chapter:create": (p) => repo.createChapter(idSchema.parse(p)),
+  "story:apply-development": (p) => {
+    const value = z.object({ projectId: idSchema, draft: developmentDraftSchema, selectedIds: z.array(idSchema).min(1).max(30) }).parse(p);
+    return applyDevelopment(repo, value.projectId, value.draft, value.selectedIds);
+  },
+  "story:undo-development": (p) => {
+    const value = z.object({ projectId: idSchema, undoId: idSchema }).parse(p);
+    return undoDevelopment(repo, value.projectId, value.undoId);
+  },
   "chapter:delete": (p) => {
     assertIdle();
     return repo.deleteChapter(idSchema.parse(p));
@@ -541,6 +517,10 @@ const handlers: Record<
           memoryRecords: records,
           memoryRevisionId: built.revisionId,
         };
+      }
+      if (request.kind === "develop") {
+        const draft = parseDevelopment(text, built.developmentSnapshot!);
+        return { text: developmentText(draft), developmentDraft: draft };
       }
       return { text };
     } finally {

@@ -116,7 +116,7 @@ defineExpose({ replace, append, replaceSelected });
     <div class="editor-paper">
       <div v-if="isEmpty" class="editor-placeholder">
         故事从这里开始。<br /><span
-          >写下第一句话，或请右侧的创作搭档陪你开个头。</span
+          >写下第一句话，或只给几个关键词让 AI 开篇。设定和计划都可以之后再补。</span
         >
       </div>
       <EditorContent :editor="editor" />

@@ -95,6 +95,29 @@ describe("创作资料删除", () => {
     expect(() => repo.deleteCard(randomUUID())).toThrow("不存在");
     expect(repo.listCards()).toEqual(before);
   });
+
+  it.each(["character", "world"] as const)(
+    "删除故事内 %s 副本时保留资料库、其他故事、正文、记忆和图片",
+    (kind) => {
+      const { repo, source, sameName, project, copy, image } = setup(kind);
+      const other = repo.createProject({ title: "另一个故事", premise: "", mode: "explore" });
+      const otherCopy = repo.copyCard(source.id, other.id);
+      const chapter = repo.getDetail(project.id).chapters[0];
+      repo.updateChapter(chapter.id, { document: textToDocument("已经写下的角色经历。") });
+      repo.adoptChapter(chapter.id);
+      repo.addMemory(project.id, "fact", "角色曾在此停留。");
+      const before = repo.getDetail(project.id);
+      repo.deleteCard(copy.id);
+      expect(() => repo.getCard(copy.id)).toThrow("不存在");
+      const after = repo.getDetail(project.id);
+      expect(after.cards).toEqual([]);
+      expect(after.chapters).toEqual(before.chapters);
+      expect(after.memories).toEqual(before.memories);
+      expect(repo.listCards()).toEqual(expect.arrayContaining([source, sameName]));
+      expect(repo.getDetail(other.id).cards).toEqual([otherCopy]);
+      expect(repo.getImage(image.id)).toEqual(image);
+    },
+  );
 });
 
 function setupStore() {
@@ -120,6 +143,18 @@ function setupStore() {
 }
 
 describe("资料删除与工作区状态", () => {
+  it("删除故事资料后立即移除当前卡片，保留资料库与待保存正文", async () => {
+    const { repo, source, sameName, copy, image, store } = setupStore();
+    store.editChapter({ document: textToDocument("未保存的冒险") });
+    await store.deleteCard(copy.id);
+    expect(store.detail?.cards).toEqual([]);
+    expect(store.cards).toEqual(expect.arrayContaining([source, sameName]));
+    expect(store.images).toEqual([image]);
+    expect(store.chapter?.content).toBe("未保存的冒险");
+    await store.flush();
+    expect(repo.getChapter(store.chapterId).content).toBe("未保存的冒险");
+  });
+
   it("删除后立即更新资料列表，保留当前故事副本、参考图和待保存正文", async () => {
     const { repo, source, sameName, copy, image, store, invoke } = setupStore();
     store.editChapter({ document: textToDocument("尚未保存的正文") });

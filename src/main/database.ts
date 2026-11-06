@@ -16,6 +16,7 @@ import type {
   Memory,
   MemoryKind,
   Mode,
+  CreativeFreedom,
   Project,
   ProjectDetail,
   Revision,
@@ -179,6 +180,7 @@ export class StoryRepository {
     title: string;
     premise: string;
     mode: Mode;
+    creativeFreedom?: CreativeFreedom;
     genre?: string;
     cardIds?: string[];
   }): Project {
@@ -188,6 +190,7 @@ export class StoryRepository {
         title: input.title,
         premise: input.premise,
         mode: input.mode,
+        creativeFreedom: input.creativeFreedom ?? (input.mode === "explore" ? "free" : "balanced"),
         genre: input.genre || "未分类",
         world: "",
         style: "",
@@ -222,6 +225,7 @@ export class StoryRepository {
         | "title"
         | "premise"
         | "mode"
+        | "creativeFreedom"
         | "genre"
         | "world"
         | "style"
@@ -280,6 +284,7 @@ export class StoryRepository {
       this.db
         .prepare("DELETE FROM settings WHERE key LIKE ?")
         .run("workflow.run." + id + ".%");
+      this.db.prepare("DELETE FROM settings WHERE key = ? OR key LIKE ?").run(`development.undo.${id}`, `development.applied.${id}.%`);
       return removeFiles;
     })();
   }

@@ -180,6 +180,169 @@ describe("自动保存队列", () => {
     expect(store.output).toBe("本地测试正文");
     await store.flush();
   });
+  it("连续触发创作只启动一个任务，切换故事后迟到的结果不会污染新故事", async () => {
+    const store = setup();
+    let progress: (event: ProgressEvent) => void = () => {};
+    window.storybook.onProgress = (callback) => {
+      progress = callback;
+      return () => {};
+    };
+    store.initializeListeners();
+    let finish: (value: unknown) => void = () => {};
+    let activeRequest = "";
+    invoke.mockImplementation((action, payload) => {
+      if (action === "ai:run") {
+        activeRequest = payload.requestId;
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }
+      return Promise.resolve(true);
+    });
+    const running = store.runTask("develop");
+    await store.runTask("opening");
+    await vi.waitFor(() => expect(activeRequest).not.toBe(""));
+    expect(
+      invoke.mock.calls.filter(([action]) => action === "ai:run"),
+    ).toHaveLength(1);
+    store.detail = {
+      ...store.detail!,
+      project: { ...store.detail!.project, id: "other-story" },
+    };
+    store.output = "新故事已有草稿";
+    progress({ requestId: activeRequest, delta: "旧故事结果" });
+    finish({ text: "旧故事设定" });
+    await running;
+    expect(store.output).toBe("新故事已有草稿");
+    expect(store.detail.project.blueprintCandidates).toEqual([]);
+    expect(store.busy).toBe(false);
+    await store.flush();
+  });
+  it("结构化设定建议进入可恢复候选，审核编辑和撤销入口随草稿保存", async () => {
+    const store = setup();
+    const plan = {
+      id: crypto.randomUUID(),
+      projectId: "story",
+      summary: "完善废土冒险",
+      changes: [
+        {
+          id: crypto.randomUUID(),
+          target: "blueprint" as const,
+          targetId: "",
+          sectionId: "",
+          name: "",
+          title: "下一站",
+          content: "到盐湖寻找燃料。",
+          mode: "append" as const,
+          basis: "proposal" as const,
+          sources: [],
+          base: null,
+        },
+      ],
+      warnings: [],
+      appliedIds: [],
+    };
+    invoke.mockImplementation((action) =>
+      Promise.resolve(
+        action === "ai:run"
+          ? { text: "完善废土冒险", developmentDraft: plan }
+          : true,
+      ),
+    );
+    await store.runTask("develop");
+    await store.flush();
+    expect(store.detail!.project.blueprintCandidates[0].development).toEqual(
+      plan,
+    );
+    store.outputKind = "chapter";
+    store.output = "之后生成的另一份正文";
+    store.reviewDevelopment(plan);
+    expect(store.outputKind).toBe("develop");
+    expect(store.output).toContain("到盐湖寻找燃料");
+    expect(store.output).not.toContain("另一份正文");
+    const edited = structuredClone(plan);
+    edited.changes[0].content = "先到盐湖，但不要揭示身世。";
+    store.editDevelopment(edited);
+    store.developmentUndoId = crypto.randomUUID();
+    store.scratch();
+    await store.flush();
+    const saved = invoke.mock.calls
+      .filter(([action]) => action === "scratch:save")
+      .at(-1)![1];
+    expect(saved.developmentDraft.changes[0].content).toContain("不要揭示身世");
+    expect(saved.developmentUndoId).toBe(store.developmentUndoId);
+    expect(saved.selectedTool).toBe("develop");
+    expect(
+      store.detail!.project.blueprintCandidates[0].development!.changes[0]
+        .content,
+    ).toContain("不要揭示身世");
+  });
+  it("连续点击下一章只创建一章，并将生成结果绑定到新章节", async () => {
+    const store = setup();
+    const next = {
+      ...store.chapter!,
+      id: "next-chapter",
+      position: 2,
+      title: "第二章",
+    };
+    let release: (value: unknown) => void = () => {};
+    invoke.mockImplementation((action) => {
+      if (action === "chapter:create")
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      return Promise.resolve(action === "ai:run" ? { text: "新的冒险" } : true);
+    });
+    const writing = store.runTask("chapter", { newChapter: true });
+    await store.runTask("chapter", { newChapter: true });
+    await vi.waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([action]) => action === "chapter:create"),
+      ).toHaveLength(1),
+    );
+    release(next);
+    await writing;
+    expect(store.detail!.chapters).toHaveLength(2);
+    expect(store.outputChapterId).toBe(next.id);
+    expect(
+      invoke.mock.calls.find(([action]) => action === "ai:run")?.[1].chapterId,
+    ).toBe(next.id);
+    await store.flush();
+  });
+  it("建章期间切换故事，迟到的章节不会混入新故事或启动续写", async () => {
+    const store = setup();
+    const next = {
+      ...store.chapter!,
+      id: "next-chapter",
+      position: 2,
+      title: "第二章",
+    };
+    let release: (value: unknown) => void = () => {};
+    invoke.mockImplementation((action) =>
+      action === "chapter:create"
+        ? new Promise((resolve) => {
+            release = resolve;
+          })
+        : Promise.resolve(true),
+    );
+    const writing = store.runTask("chapter", { newChapter: true });
+    await vi.waitFor(() =>
+      expect(
+        invoke.mock.calls.some(([action]) => action === "chapter:create"),
+      ).toBe(true),
+    );
+    store.detail = {
+      ...store.detail!,
+      project: { ...store.detail!.project, id: "other-story" },
+    };
+    release(next);
+    await writing;
+    expect(store.detail.chapters).toHaveLength(1);
+    expect(invoke.mock.calls.some(([action]) => action === "ai:run")).toBe(
+      false,
+    );
+    await store.flush();
+  });
   it("传给桌面桥的是可克隆的普通数据，包含嵌套资料与设置", async () => {
     const store = setup();
     invoke.mockImplementation((_action, payload) =>
