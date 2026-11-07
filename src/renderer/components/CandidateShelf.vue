@@ -2,11 +2,14 @@
 import { computed, ref, watch } from "vue";
 import { NButton, NPopconfirm } from "naive-ui";
 import { useWorkspace } from "../stores/workspace";
-const props = defineProps<{ kind: "settings" | "blueprint" }>();
+import { isLegacyPlanning } from "../../shared/blueprint";
+const props = defineProps<{ kind: "settings" | "blueprint" | "outline" }>();
 const store = useWorkspace(),
   opened = ref<string[]>([]);
 const sets = computed(() =>
-  store.changeSets.filter((s) => s.kind === props.kind),
+  store.changeSets.filter(
+    (s) => (isLegacyPlanning(s) ? "outline" : s.kind) === props.kind,
+  ),
 );
 const key = computed(() => props.kind + ".candidates");
 watch(
@@ -44,7 +47,13 @@ async function remove(id: string) {
   <section class="candidate-shelf">
     <button class="candidate-summary" @click="toggle('all')">
       {{ opened.includes("all") ? "▾" : "▸" }}
-      {{ kind === "settings" ? "设定候选" : "蓝图候选" }}
+      {{
+        kind === "settings"
+          ? "设定候选"
+          : kind === "outline"
+            ? "大纲候选"
+            : "额外设定候选"
+      }}
       <span>{{ sets.length }}</span>
     </button>
     <div v-if="opened.includes('all')">
@@ -64,6 +73,9 @@ async function remove(id: string) {
         </button>
         <div v-if="opened.includes(s.id)">
           <pre>{{ s.changes.map((c) => c.after).join("\n\n") }}</pre>
+          <p v-if="isLegacyPlanning(s)" class="field-help">
+            旧版分层规划建议，仅供查看；请在大纲规划中重新生成后采用。
+          </p>
           <div class="workbench-actions">
             <NButton size="small" @click="store.reviewingChangeId = s.id"
               >查看差异与审核</NButton

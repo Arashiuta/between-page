@@ -38,7 +38,7 @@ export const blueprintTargetSchema = z
   .refine(
     (t) => !t.id || (t.parentId === undefined && t.chapterId === undefined),
     {
-      message: "编辑已有蓝图节点不能同时指定新节点的归属。",
+      message: "编辑已有条目或大纲节点不能同时指定新节点的归属。",
     },
   );
 export const requestSchema = z
@@ -52,6 +52,17 @@ export const requestSchema = z
       .strict(),
     base
       .extend({ kind: z.literal("blueprint"), target: blueprintTargetSchema })
+      .strict(),
+    base
+      .extend({ kind: z.literal("outline"), target: blueprintTargetSchema })
+      .strict(),
+    base
+      .extend({
+        kind: z.literal("directions"),
+        chapterId: z.string().uuid(),
+        count: z.number().int().min(1).max(5),
+        triggerChangeSetId: z.string().uuid().optional(),
+      })
       .strict(),
     ...(["opening", "continue", "notes", "title"] as const).map((kind) =>
       base

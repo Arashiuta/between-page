@@ -13,6 +13,8 @@ export const taskKinds = [
   "brainstorm",
   "settings",
   "blueprint",
+  "outline",
+  "directions",
   "opening",
   "continue",
   "polish",
@@ -71,6 +73,12 @@ export interface Chapter {
   dirty: boolean;
   needsReview: boolean;
   planningReview?: string;
+  explorationSource?: {
+    chapterId: string;
+    sourceFingerprint: string;
+    basis: string;
+    instruction: string;
+  };
   updatedAt: string;
 }
 export interface Revision {
@@ -200,10 +208,12 @@ export interface AppearanceSettings {
 }
 export interface SoftwareSettings {
   closeAction: CloseAction;
+  directionCount: number;
   appearance: AppearanceSettings;
 }
 export type SoftwareSettingsPatch = {
   closeAction?: CloseAction;
+  directionCount?: number;
   appearance?: Partial<AppearanceSettings>;
 };
 export interface Settings {
@@ -264,7 +274,13 @@ export type TaskRequest = RequestBase &
   (
     | { kind: "brainstorm" }
     | { kind: "settings"; cardId?: string }
-    | { kind: "blueprint"; target: BlueprintTarget }
+    | { kind: "blueprint" | "outline"; target: BlueprintTarget }
+    | {
+        kind: "directions";
+        chapterId: string;
+        count: number;
+        triggerChangeSetId?: string;
+      }
     | { kind: "opening" | "continue" | "notes" | "title"; chapterId: string }
     | {
         kind: "polish";
@@ -355,7 +371,31 @@ export type TaskResult =
   | { type: "chat"; text: string }
   | { type: "report"; text: string; report: CheckReport }
   | { type: "changes"; text: string; changeSetId: string }
-  | { type: "illustration"; text: string };
+  | { type: "illustration"; text: string }
+  | { type: "directions"; text: string; options: DirectionOption[] };
+export interface DirectionOption {
+  id: string;
+  title: string;
+  content: string;
+}
+export interface DirectionState {
+  projectId: string;
+  chapterId: string;
+  sourceFingerprint: string;
+  basis: string;
+  options: DirectionOption[];
+  selectedId: string | null;
+  instruction: string;
+  model: string;
+  turnId: string;
+  createdAt: string;
+}
+export interface DirectionView {
+  state: DirectionState | null;
+  stale: boolean;
+  sourceFingerprint: string;
+  basis: string;
+}
 export interface CreationConversation {
   id: string;
   projectId: string;

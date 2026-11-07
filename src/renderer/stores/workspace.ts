@@ -29,6 +29,7 @@ import type {
   CheckScope,
   CheckAspect,
   PolishAspect,
+  DirectionView,
 } from "../../shared/types";
 import { defaultRoleSettings } from "../../shared/roles";
 import { documentToText } from "../../shared/document";
@@ -57,6 +58,8 @@ export const useWorkspace = defineStore("workspace", () => {
     taskError = ref(""),
     selection = ref<TextSelection | null>(null);
   const blueprintTarget = ref<BlueprintTarget>({ level: "section", count: 1 }),
+    outlineTarget = ref<BlueprintTarget>({ level: "synopsis", count: 1 }),
+    planningNodeId = ref(""),
     settingCardId = ref<string>(),
     checkScope = ref<"current" | "chapters" | "book">("current"),
     checkChapterIds = ref<string[]>([]),
@@ -87,6 +90,13 @@ export const useWorkspace = defineStore("workspace", () => {
     generationProjectId = "",
     finished = Promise.resolve(),
     stopRequested = false;
+  const directionsBusy = ref(false),
+    directionsChapterId = ref(""),
+    directionsError = ref(""),
+    directionsEpoch = ref(0);
+  let directionRequestId = "",
+    directionFinished = Promise.resolve(),
+    directionStopped = false;
   let projectLoad = 0,
     conversationLoad = 0,
     settingsEdit = 0,
@@ -236,6 +246,7 @@ export const useWorkspace = defineStore("workspace", () => {
           conversationId: conversationId.value,
           chapterId: chapterId.value,
           blueprintTarget: blueprintTarget.value,
+          outlineTarget: outlineTarget.value,
           settingCardId: settingCardId.value,
           checkScope: checkScope.value,
           checkChapterIds: checkChapterIds.value,
@@ -291,6 +302,10 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   async function openProject(id: string) {
     const ticket = ++projectLoad;
+    if (directionsBusy.value) {
+      await stopDirections();
+      await directionFinished;
+    }
     if (busy.value) {
       await stopTask();
       await finished;
@@ -301,6 +316,8 @@ export const useWorkspace = defineStore("workspace", () => {
     detail.value = loaded;
     chapterId.value = detail.value.chapters[0]?.id ?? "";
     selection.value = null;
+    planningNodeId.value = "";
+    directionsError.value = "";
     clearConversation();
     const [cs, sets] = await Promise.all([
       api<CreationConversation[]>("conversation:list", id),
@@ -339,6 +356,24 @@ export const useWorkspace = defineStore("workspace", () => {
         level: "section",
         count: 1,
       };
+      outlineTarget.value = saved.outlineTarget ?? {
+        level: "synopsis",
+        count: 1,
+      };
+      if (blueprintTarget.value.level !== "section") {
+        if (detail.value.project.mode === "novel")
+          outlineTarget.value = blueprintTarget.value;
+        blueprintTarget.value = { level: "section", count: 1 };
+        if (taskKind.value === "blueprint")
+          taskKind.value =
+            detail.value.project.mode === "novel" ? "outline" : "brainstorm";
+      }
+      if (
+        (taskKind.value === "outline" &&
+          detail.value.project.mode !== "novel") ||
+        taskKind.value === "directions"
+      )
+        taskKind.value = "brainstorm";
       settingCardId.value = saved.settingCardId;
       checkScope.value = saved.checkScope ?? "current";
       checkChapterIds.value = saved.checkChapterIds ?? [];
@@ -357,9 +392,10 @@ export const useWorkspace = defineStore("workspace", () => {
       taskKind.value = "brainstorm";
       instruction.value = "";
       blueprintTarget.value = {
-        level: detail.value.project.mode === "novel" ? "synopsis" : "section",
+        level: "section",
         count: 1,
       };
+      outlineTarget.value = { level: "synopsis", count: 1 };
     }
   }
   async function switchChapter(id: string) {
@@ -442,11 +478,15 @@ export const useWorkspace = defineStore("workspace", () => {
           ...(settingCardId.value ? { cardId: settingCardId.value } : {}),
         };
         break;
-      case "blueprint": {
-        const t = blueprintTarget.value;
+      case "blueprint":
+      case "outline": {
+        const t =
+          taskKind.value === "outline"
+            ? outlineTarget.value
+            : blueprintTarget.value;
         r = {
           ...base,
-          kind: "blueprint",
+          kind: taskKind.value,
           target: {
             level: t.level,
             count: t.count || 1,
@@ -457,6 +497,15 @@ export const useWorkspace = defineStore("workspace", () => {
         };
         break;
       }
+      case "directions":
+        if (!cid) throw new Error("请先选择章节。");
+        r = {
+          ...base,
+          kind: "directions",
+          chapterId: cid,
+          count: settings.value?.software.directionCount ?? 3,
+        };
+        break;
       case "check": {
         const scope: CheckScope =
           checkScope.value === "book"
@@ -557,6 +606,7 @@ export const useWorkspace = defineStore("workspace", () => {
       taskModel.value = r.model ?? "";
       if ("chapterId" in r && r.chapterId) chapterId.value = r.chapterId;
       if (r.kind === "blueprint") blueprintTarget.value = r.target;
+      if (r.kind === "outline") outlineTarget.value = r.target;
       if (r.kind === "polish") {
         selection.value = r.selection;
         polishAspect.value = r.aspect;
@@ -614,14 +664,16 @@ export const useWorkspace = defineStore("workspace", () => {
     scratch();
   }
   async function chooseTool(kind: TaskKind) {
-    if (busy.value) return;
+    if (busy.value || directionsBusy.value) return;
     if (kind === "settings") throw new Error("请在资料编辑中使用 AI 提炼。");
+    if (kind === "outline" && detail.value?.project.mode !== "novel")
+      throw new Error("大纲规划仅用于长篇模式。");
     taskKind.value = kind;
     await restoreConversation();
     scratch();
   }
   async function runTask(kind?: TaskKind) {
-    if (busy.value || !detail.value) return;
+    if (busy.value || directionsBusy.value || !detail.value) return;
     if (kind) taskKind.value = kind;
     busy.value = true;
     taskError.value = "";
@@ -675,17 +727,129 @@ export const useWorkspace = defineStore("workspace", () => {
     changes: { id: string; after: string; title?: string }[],
   ) {
     if (!detail.value) return;
+    const pid = detail.value.project.id;
+    const original = changeSets.value.find((s) => s.id === id);
+    const directionChapterIds =
+      original && ["opening", "continue"].includes(original.kind)
+        ? original.changes
+            .filter(
+              (c) =>
+                !c.applied &&
+                changes.some((i) => i.id === c.id) &&
+                c.target.type === "prose",
+            )
+            .map((c) => (c.target.type === "prose" ? c.target.chapterId : ""))
+        : [];
     await flush();
     const value = await api<{ detail: ProjectDetail; changeSet: ChangeSet }>(
       "changes:apply",
       { projectId: detail.value.project.id, id, changes },
     );
+    if (detail.value?.project.id !== pid) return value.changeSet;
     detail.value = value.detail;
     changeSets.value = changeSets.value.map((s) =>
       s.id === id ? value.changeSet : s,
     );
     notify("修改已采用。");
+    if (value.detail.project.mode === "explore") {
+      // The prose transaction has committed. Direction failures must not fail or roll it back.
+      for (const cid of new Set(directionChapterIds))
+        void generateDirections(cid, id);
+    }
     return value.changeSet;
+  }
+  async function generateDirections(cid: string, triggerChangeSetId?: string) {
+    if (
+      !detail.value ||
+      busy.value ||
+      directionsBusy.value ||
+      detail.value.project.mode !== "explore"
+    )
+      return;
+    const pid = detail.value.project.id;
+    directionsBusy.value = true;
+    directionsChapterId.value = cid;
+    directionStopped = false;
+    directionsError.value = "";
+    let done!: () => void;
+    directionFinished = new Promise((resolve) => (done = resolve));
+    directionRequestId = crypto.randomUUID();
+    try {
+      await flush();
+      if (directionStopped) return;
+      const r: TaskRequest = {
+        requestId: directionRequestId,
+        projectId: pid,
+        mode: "explore",
+        kind: "directions",
+        chapterId: cid,
+        count: settings.value?.software.directionCount ?? 3,
+        instruction: "请根据审核写入后的当前章生成下一章走向。",
+        ...(taskModel.value ? { model: taskModel.value } : {}),
+        ...(triggerChangeSetId ? { triggerChangeSetId } : {}),
+      };
+      await api("ai:run", r);
+      await api("ui:save", {
+        projectId: pid,
+        key: "direction-draft." + cid,
+        value: null,
+      });
+    } catch (e) {
+      if (detail.value?.project.id === pid)
+        directionsError.value = (e as Error).message;
+    } finally {
+      directionRequestId = "";
+      directionsBusy.value = false;
+      directionsEpoch.value++;
+      done();
+    }
+  }
+  async function stopDirections() {
+    directionStopped = true;
+    if (directionRequestId) await api("ai:cancel", directionRequestId);
+  }
+  function saveDirectionDraft(cid: string, value: unknown) {
+    if (!detail.value) return;
+    const pid = detail.value.project.id;
+    enqueue("direction-draft:" + pid + ":" + cid, "ui:save", {
+      projectId: pid,
+      key: "direction-draft." + cid,
+      value,
+    });
+  }
+  async function createExplorationChapter(cid: string, view: DirectionView) {
+    if (!detail.value || busy.value || directionsBusy.value || creatingChapter)
+      return;
+    const pid = detail.value.project.id;
+    const navigation = projectLoad;
+    const current = () =>
+      navigation === projectLoad && detail.value?.project.id === pid;
+    creatingChapter = (async () => {
+      await flush();
+      if (!current()) return;
+      const c = await api<Chapter>("exploration:create-next", {
+        projectId: pid,
+        chapterId: cid,
+        sourceFingerprint: view.sourceFingerprint,
+        basis: view.basis,
+      });
+      if (!current()) return;
+      await refreshProject();
+      if (!current()) return;
+      chapterId.value = c.id;
+      selection.value = null;
+      instruction.value = "";
+      clearConversation();
+      taskKind.value = "opening";
+      scratch();
+      await runTask();
+      return c;
+    })();
+    try {
+      return await creatingChapter;
+    } finally {
+      creatingChapter = null;
+    }
   }
   async function requestClose() {
     if (closingWindow.value) return;
@@ -704,6 +868,10 @@ export const useWorkspace = defineStore("workspace", () => {
       if (action === "quit" && busy.value) {
         await stopTask();
         await finished;
+      }
+      if (action === "quit" && directionsBusy.value) {
+        await stopDirections();
+        await directionFinished;
       }
       scratch();
       await flush();
@@ -798,6 +966,12 @@ export const useWorkspace = defineStore("workspace", () => {
     taskError,
     selection,
     blueprintTarget,
+    outlineTarget,
+    planningNodeId,
+    directionsBusy,
+    directionsChapterId,
+    directionsError,
+    directionsEpoch,
     settingCardId,
     checkScope,
     checkChapterIds,
@@ -844,6 +1018,10 @@ export const useWorkspace = defineStore("workspace", () => {
     runTask,
     stopTask,
     applyChanges,
+    generateDirections,
+    stopDirections,
+    saveDirectionDraft,
+    createExplorationChapter,
     requestClose,
     confirmClose,
     setModel,

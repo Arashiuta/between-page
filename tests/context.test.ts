@@ -44,9 +44,9 @@ describe("完整统一的故事依据", () => {
     },
   );
   it.each(taskKinds)(
-    "%s 的实际消息含完整蓝图、全部设定和关联参考图",
+    "%s 的实际消息含完整额外设定、全部设定和关联参考图",
     async (kind) => {
-      const f = fixture();
+      const f = fixture(kind === "directions" ? "explore" : "novel");
       const outline = node(f, "section", "规划末尾标记".repeat(1500));
       f.repo.updateProject(f.project.id, {
         world: "世界末尾".repeat(3000),
@@ -318,9 +318,9 @@ describe("完整统一的故事依据", () => {
         options,
       );
       expect(allText(p)).toContain(
-        mode === "novel" ? "长篇创作蓝图" : "自由探索蓝图",
+        mode === "novel" ? "长篇创作额外设定" : "自由探索额外设定",
       );
-      expect(allText(p)).toContain("蓝图的全部内容");
+      expect(allText(p)).toContain("额外设定的全部内容");
       expect(allText(p)).toContain("优先于世界与人物");
     },
   );

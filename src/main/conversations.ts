@@ -13,17 +13,19 @@ import type {
   ProjectDetail,
 } from "../shared/types";
 import { requestKey, requestSchema } from "../shared/requests";
-import { modeTools, toolNames } from "../shared/tools";
+import { toolNames } from "../shared/tools";
 import {
   buildContext,
   basis,
   estimatedTokens,
   fingerprint,
+  explorationBasis,
   type ContextOptions,
 } from "./context";
 import { buildChangeSet, saveChangeSet, listChangeSets } from "./changes";
 import { selectionText } from "./document-edit";
-import { validateBlueprint } from "../shared/blueprint";
+import { outlineLevels, validateBlueprint } from "../shared/blueprint";
+import { automaticDirectionKey, saveDirections } from "./exploration";
 const copy = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 const json = (s: string) =>
   JSON.parse(
@@ -65,13 +67,42 @@ export function validateRequest(repo: StoryRepository, r: TaskRequest) {
     !d.cards.some((c) => c.id === r.cardId)
   )
     throw new Error("目标资料不属于当前作品。");
-  if (r.kind === "blueprint") {
+  if (r.kind === "directions") {
+    if (r.mode !== "explore" || !chapter?.content.trim())
+      throw new Error("自由探索需先写入当前章正文，再生成走向。");
+    if (r.parentTurnId) throw new Error("剧情走向每次根据当前正文重新生成。");
+    if (r.triggerChangeSetId) {
+      const set = listChangeSets(repo, r.projectId).find(
+        (s) => s.id === r.triggerChangeSetId,
+      );
+      if (
+        !set ||
+        !["opening", "continue"].includes(set.kind) ||
+        !set.changes.some(
+          (c) =>
+            c.applied &&
+            c.target.type === "prose" &&
+            c.target.chapterId === r.chapterId,
+        )
+      )
+        throw new Error("自动走向必须来源于已审核写入的开篇或续写。");
+    }
+  }
+  if (r.kind === "blueprint" || r.kind === "outline") {
     const t = r.target,
       existing = d.project.blueprint.nodes.find((n) => n.id === t.id);
-    if (!modeTools[r.mode].blueprintLevels.includes(t.level))
+    const levels =
+      r.kind === "blueprint"
+        ? ["section"]
+        : r.mode === "novel"
+          ? outlineLevels
+          : [];
+    if (!levels.includes(t.level))
       throw new Error("当前模式不支持这个规划层级。");
     if (t.id && (!existing || existing.level !== t.level))
-      throw new Error("蓝图目标不存在或层级不匹配。");
+      throw new Error(
+        `${r.kind === "outline" ? "大纲" : "额外设定"}目标不存在或层级不匹配。`,
+      );
     if (t.id && t.count !== 1) throw new Error("编辑现有节点只能生成一项。");
     if (!t.id) {
       const node = {
@@ -202,11 +233,15 @@ export function listConversations(repo: StoryRepository, pid: string) {
 function contract(r: TaskRequest) {
   if (r.kind === "settings")
     return (
-      '只输出JSON：{"changes":[{"type":"card","cardId":"已有资料ID，新增则省略","kind":"character|world|inspiration","name":"资料名","field":"description|constraints|section","sectionId":"已有分区ID，新增则省略","title":"分区标题","content":"该目标的完整新内容"}]}。也可使用{"type":"project","field":"world|style","content":"完整内容"}修改世界规则或叙事偏好。禁止蓝图修改。不得返回未知字段。同一目标只出现一次。' +
+      '只输出JSON：{"changes":[{"type":"card","cardId":"已有资料ID，新增则省略","kind":"character|world|inspiration","name":"资料名","field":"description|constraints|section","sectionId":"已有分区ID，新增则省略","title":"分区标题","content":"该目标的完整新内容"}]}。也可使用{"type":"project","field":"world|style","content":"完整内容"}修改世界规则或叙事偏好。禁止额外设定修改。不得返回未知字段。同一目标只出现一次。' +
       (r.cardId ? "只修改资料：" + r.cardId : "")
     );
   if (r.kind === "blueprint")
-    return `仅处理指定蓝图目标 ${JSON.stringify(r.target)}。返回 ${r.target.id ? 1 : r.target.count} 项。只输出JSON：{"items":[{"title":"名称","content":"该节点完整新内容"}]}。不创建正文、不修改设定。`;
+    return `仅处理指定额外设定目标 ${JSON.stringify(r.target)}。返回 ${r.target.id ? 1 : r.target.count} 项。额外设定保存作者自定义的文章特殊要求和故事约束，条目名称与内容自由定义，例如视角限制、能力代价、感情线边界；示例不是固定分类。已有大纲仅作背景参考，不能作为输出模板。不得自行生成“第一章……”式章纲、剧情梗概或逐章安排。只输出JSON：{"items":[{"title":"自定义约束条目名称","content":"该条目的完整特殊要求或约束内容，供创作时持续参考"}]}。修改已有条目时保留作者的主题与未受影响内容。不创建正文，不修改大纲、世界与人物或其他资料。`;
+  if (r.kind === "outline")
+    return `仅处理指定大纲目标 ${JSON.stringify(r.target)}。返回 ${r.target.id ? 1 : r.target.count} 项。按指定层级输出剧情规划。只输出JSON：{"items":[{"title":"名称","content":"该节点完整新内容"}]}。不创建正文、不修改额外设定或资料。`;
+  if (r.kind === "directions")
+    return `生成恰好 ${r.count} 个不同的下一章剧情走向。只输出JSON：{"options":[{"title":"简短标题","content":"具体的剧情说明"}]}。每项都须遵守全部额外设定、资料和有效记忆，衔接当前正文，不输出正文，不将走向写成已发生事实。`;
   if (r.kind === "notes")
     return '只输出JSON：{"records":[{"kind":"summary|fact|state|relationship|knowledge|foreshadow","content":"自足事实记录"}]}。最多24条。';
   if (r.kind === "polish") return "本次打磨方向：" + r.aspect;
@@ -474,12 +509,32 @@ export async function runCreationTask(
 ) {
   const r = requestSchema.parse(input) as TaskRequest,
     d = validateRequest(repo, r);
+  const automaticKey =
+    r.kind === "directions" ? automaticDirectionKey(r) : null;
+  if (automaticKey) {
+    const previousId = repo.getSetting<string | null>(automaticKey, null);
+    if (previousId) {
+      const previous = getTurn(repo, r.projectId, previousId);
+      if (previous.status === "complete" && previous.result)
+        return {
+          conversationId: previous.conversationId,
+          turnId: previous.id,
+          result: previous.result,
+        };
+      if (previous.status === "generating")
+        throw new Error("本次正文的走向正在生成。");
+    }
+  }
   const c = r.conversationId
     ? getConversation(repo, r.projectId, r.conversationId)
     : createConversation(repo, r);
   if (c.key !== requestKey(r)) throw new Error("对话目标不匹配。");
   r.conversationId = c.id;
   const initialBasis = basis(repo, r.projectId),
+    initialExplorationBasis =
+      r.kind === "directions"
+        ? explorationBasis(repo, r.projectId, r.chapterId)
+        : "",
     turns = conversationDetail(repo, r.projectId, c.id).turns;
   const t: CreationTurn = {
     id: randomUUID(),
@@ -497,6 +552,7 @@ export async function runCreationTask(
     createdAt: new Date().toISOString(),
   };
   writeTurn(repo, t);
+  if (automaticKey) repo.setSetting(automaticKey, t.id);
   c.selectedTurnId = t.id;
   writeConversation(repo, c);
   const delta = (s: string) => {
@@ -525,7 +581,45 @@ export async function runCreationTask(
       if (r.kind === "brainstorm") result = { type: "chat", text: raw };
       else if (r.kind === "prompt")
         result = { type: "illustration", text: raw };
-      else {
+      else if (r.kind === "directions") {
+        const parsed = z
+          .object({
+            options: z
+              .array(
+                z
+                  .object({
+                    title: z.string().trim().min(1).max(200),
+                    content: z.string().trim().min(1).max(10000),
+                  })
+                  .strict(),
+              )
+              .length(r.count),
+          })
+          .strict()
+          .parse(json(raw));
+        if (
+          new Set(parsed.options.map((o) => o.title + "\n" + o.content))
+            .size !== r.count
+        )
+          throw new Error("剧情走向重复，请重新生成。");
+        const options = parsed.options.map((o) => ({ ...o, id: randomUUID() }));
+        result = { type: "directions", text: raw, options };
+        t.result = result;
+        t.status = "complete";
+        repo.db.transaction(() => {
+          saveDirections(repo, r, options, {
+            sourceFingerprint: fingerprint(
+              d.chapters.find((c) => c.id === r.chapterId)!.document,
+            ),
+            basis: initialExplorationBasis,
+            model: opts.model,
+            turnId: t.id,
+            preview,
+          });
+          writeTurn(repo, t);
+        })();
+        return { conversationId: c.id, turnId: t.id, result };
+      } else {
         const set = buildChangeSet(
           d,
           r,

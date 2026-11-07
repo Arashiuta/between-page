@@ -4,6 +4,7 @@ import { NModal, NButton, NCheckbox, NInput } from "naive-ui";
 import { useWorkspace } from "../stores/workspace";
 import type { ChangeSet, ProposedChange } from "../../shared/types";
 import DiffText from "./DiffText.vue";
+import { isLegacyPlanning } from "../../shared/blueprint";
 const store = useWorkspace(),
   set = ref<ChangeSet | null>(null),
   chosen = ref<string[]>([]),
@@ -12,6 +13,7 @@ const store = useWorkspace(),
   applying = ref(false),
   error = ref("");
 const show = computed(() => !!store.reviewingChangeId);
+const legacy = computed(() => !!set.value && isLegacyPlanning(set.value));
 function label(c: ProposedChange) {
   const t = c.target;
   return t.type === "setting"
@@ -119,6 +121,9 @@ async function apply() {
       按完整目标审核。编辑建议会同步更新差异；确认后才写入故事，采用前自动保存快照。
     </p>
     <p v-if="error" class="review-error" role="alert">{{ error }}</p>
+    <p v-if="legacy" class="field-help">
+      旧版分层规划建议保留查看，请在大纲规划中重新生成后采用。
+    </p>
     <article v-for="c in set?.changes" :key="c.id" class="review-item">
       <NCheckbox
         :checked="chosen.includes(c.id)"
@@ -158,7 +163,7 @@ async function apply() {
         ><NButton
           type="primary"
           :loading="applying"
-          :disabled="!chosen.length || store.busy"
+          :disabled="!chosen.length || store.busy || legacy"
           @click="apply"
           >采用所选修改（{{ chosen.length }}）</NButton
         >

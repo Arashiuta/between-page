@@ -33,7 +33,7 @@ const adopt = (
   );
 describe("唯一审核写入入口", () => {
   it.each(["explore", "novel"] as const)(
-    "%s 完成设定、蓝图、开篇、续写、打磨、命名与记忆审核",
+    "%s 完成设定、额外设定、开篇、续写、打磨、命名与记忆审核",
     async (mode) => {
       const f = fixture(mode);
       const initial = f.repo.getDetail(f.project.id);
@@ -210,7 +210,7 @@ describe("唯一审核写入入口", () => {
     const n = node(f, "synopsis", "原总纲");
     const set = await proposal(
       f,
-      request(f, "blueprint", {
+      request(f, "outline", {
         target: { level: "synopsis", id: n.id, count: 1 },
       }),
       '{"items":[{"title":"新标题","content":"新总纲"}]}',
@@ -256,7 +256,7 @@ describe("唯一审核写入入口", () => {
       proposal(
         f,
         request(f, "settings"),
-        '{"items":[{"title":"蓝图","content":"越界"}]}',
+        '{"items":[{"title":"额外设定","content":"越界"}]}',
       ),
     ).rejects.toThrow();
     await expect(

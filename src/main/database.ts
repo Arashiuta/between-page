@@ -324,6 +324,12 @@ export class StoryRepository {
       this.db
         .prepare("DELETE FROM settings WHERE key = ?")
         .run("blueprint.history." + id);
+      this.db
+        .prepare("DELETE FROM settings WHERE key LIKE ?")
+        .run("exploration." + id + ".%");
+      this.db
+        .prepare("DELETE FROM settings WHERE key LIKE ?")
+        .run("exploration.auto." + id + ".%");
       for (const row of this.db
         .prepare(
           "SELECT key, value FROM settings WHERE key LIKE 'review.snapshot.%'",
@@ -414,6 +420,7 @@ export class StoryRepository {
     patch: {
       title?: string;
       document?: DocumentNode;
+      explorationSource?: Chapter["explorationSource"];
     },
   ): Chapter {
     const previous = this.getChapter(id);

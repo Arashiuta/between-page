@@ -11,10 +11,26 @@ import {
 import { useWorkspace } from "../stores/workspace";
 import { toolGroups, toolNames, modeTools } from "../../shared/tools";
 import { effectiveRole } from "../../shared/roles";
-import { blueprintLabels } from "../../shared/blueprint";
+import {
+  blueprintLabels,
+  outlineLevels,
+  isLegacyPlanning,
+} from "../../shared/blueprint";
 import RequestPreview from "./RequestPreview.vue";
 import TextModelSelect from "./TextModelSelect.vue";
-import type { TaskKind, TaskPreview, BlueprintLevel } from "../../shared/types";
+import type {
+  TaskKind,
+  TaskPreview,
+  BlueprintLevel,
+  CreationTurn,
+} from "../../shared/types";
+const turnStatusLabels: Record<CreationTurn["status"], string> = {
+  generating: "生成中",
+  complete: "已完成",
+  stopped: "已停止",
+  error: "失败",
+  interrupted: "已中断",
+};
 const emit = defineEmits<{ illustration: [text: string] }>();
 const store = useWorkspace(),
   group = ref("brainstorm"),
@@ -27,13 +43,28 @@ const selectedGroup = computed(() =>
 );
 const tools = computed(() => selectedGroup.value?.kinds ?? [store.taskKind]);
 const mode = computed(() => store.detail!.project.mode);
+const availableGroups = computed(() =>
+  toolGroups.filter((g) => g.id !== "outline" || mode.value === "novel"),
+);
+const planningTarget = computed({
+  get: () =>
+    store.taskKind === "outline" ? store.outlineTarget : store.blueprintTarget,
+  set: (value) => {
+    if (store.taskKind === "outline") store.outlineTarget = value;
+    else store.blueprintTarget = value;
+  },
+});
 const modeConversations = computed(() =>
   store.conversations.filter(
-    (c) => c.mode === mode.value && c.kind !== "settings",
+    (c) =>
+      c.mode === mode.value &&
+      c.kind !== "settings" &&
+      c.kind !== "directions" &&
+      (mode.value === "novel" || c.kind !== "outline"),
   ),
 );
 const levels = computed(() =>
-  modeTools[mode.value].blueprintLevels.map((v) => ({
+  (store.taskKind === "outline" ? outlineLevels : ["section"]).map((v) => ({
     label: blueprintLabels[v as BlueprintLevel],
     value: v,
   })),
@@ -41,14 +72,14 @@ const levels = computed(() =>
 const targetNodes = computed(() =>
   store
     .detail!.project.blueprint.nodes.filter(
-      (n) => n.level === store.blueprintTarget.level,
+      (n) => n.level === planningTarget.value.level,
     )
     .map((n) => ({ label: n.title, value: n.id })),
 );
 const parentNodes = computed(() =>
   store
     .detail!.project.blueprint.nodes.filter((n) =>
-      store.blueprintTarget.level === "scene"
+      planningTarget.value.level === "scene"
         ? n.level === "chapter"
         : n.level === "volume",
     )
@@ -81,6 +112,12 @@ const activeSet = computed(() => {
     ? store.changeSets.find((s) => s.id === r.changeSetId)
     : null;
 });
+const legacy = computed(
+  () =>
+    (!!activeSet.value && isLegacyPlanning(activeSet.value)) ||
+    (store.activeConversation?.request.kind === "blueprint" &&
+      store.activeConversation.request.target.level !== "section"),
+);
 const visibleTurns = computed(() =>
   store.turns.filter(
     (t) => store.taskKind === "brainstorm" || t.id === store.selectedTurnId,
@@ -95,6 +132,7 @@ watch(
     store.polishAspect,
     store.settingCardId,
     JSON.stringify(store.blueprintTarget),
+    JSON.stringify(store.outlineTarget),
   ],
   () => {
     void store.restoreConversation();
@@ -157,7 +195,7 @@ async function run() {
     />
     <div class="tool-grid">
       <button
-        v-for="g in toolGroups"
+        v-for="g in availableGroups"
         :key="g.id"
         :class="{ active: selectedGroup?.id === g.id }"
         :disabled="store.busy"
@@ -170,6 +208,9 @@ async function run() {
       <h3>{{ toolNames[store.taskKind] }}</h3>
       <p class="field-help" v-if="store.taskKind === 'brainstorm'">
         基于本书全部非正文资料聊一聊。仅保存聊天记录，想法采用前不会变成设定。
+      </p>
+      <p class="field-help" v-else-if="store.taskKind === 'blueprint'">
+        自定义文章的特殊要求与故事约束，如视角限制、能力代价、感情线边界，供创作时持续参考。条目名称与内容均可自由定义。
       </p>
       <p
         class="field-help"
@@ -189,39 +230,43 @@ async function run() {
         :disabled="store.busy"
         @update:value="(k) => store.safe(() => store.chooseTool(k as TaskKind))"
       />
-      <template v-if="store.taskKind === 'blueprint'"
-        ><label class="field-label">规划层级</label
+      <template
+        v-if="store.taskKind === 'blueprint' || store.taskKind === 'outline'"
+        ><template v-if="store.taskKind === 'outline'"
+          ><label class="field-label">规划层级</label
+          ><NSelect
+            v-model:value="planningTarget.level"
+            :disabled="store.busy"
+            :options="levels"
+            @update:value="
+              () =>
+                (planningTarget = {
+                  level: planningTarget.level,
+                  count: 1,
+                })
+            " /></template
+        ><label class="field-label">修改目标</label
         ><NSelect
-          v-model:value="store.blueprintTarget.level"
-          :disabled="store.busy"
-          :options="levels"
-          @update:value="
-            () =>
-              (store.blueprintTarget = {
-                level: store.blueprintTarget.level,
-                count: 1,
-              })
-          " /><label class="field-label">修改目标</label
-        ><NSelect
-          v-model:value="store.blueprintTarget.id"
+          v-model:value="planningTarget.id"
           :disabled="store.busy"
           clearable
           :options="targetNodes"
-          placeholder="新建规划节点"
-          @update:value="() => (store.blueprintTarget.count = 1)" /><template
-          v-if="!store.blueprintTarget.id"
-          ><template
-            v-if="['chapter', 'scene'].includes(store.blueprintTarget.level)"
+          :placeholder="
+            store.taskKind === 'outline' ? '新建规划节点' : '新建额外设定条目'
+          "
+          @update:value="() => (planningTarget.count = 1)" /><template
+          v-if="!planningTarget.id"
+          ><template v-if="['chapter', 'scene'].includes(planningTarget.level)"
             ><label class="field-label">上级规划</label
             ><NSelect
-              v-model:value="store.blueprintTarget.parentId"
+              v-model:value="planningTarget.parentId"
               :disabled="store.busy"
               clearable
               :options="parentNodes" /></template
-          ><template v-if="store.blueprintTarget.level === 'chapter'"
+          ><template v-if="planningTarget.level === 'chapter'"
             ><label class="field-label">关联章节（可选）</label
             ><NSelect
-              v-model:value="store.blueprintTarget.chapterId"
+              v-model:value="planningTarget.chapterId"
               :disabled="store.busy"
               clearable
               :options="
@@ -232,12 +277,11 @@ async function run() {
               " /></template
           ><label class="field-label">生成数量</label
           ><NInputNumber
-            v-model:value="store.blueprintTarget.count"
+            v-model:value="planningTarget.count"
             :disabled="store.busy"
             :min="1"
             :max="
-              store.blueprintTarget.chapterId ||
-              store.blueprintTarget.level === 'synopsis'
+              planningTarget.chapterId || planningTarget.level === 'synopsis'
                 ? 1
                 : 30
             " /></template
@@ -373,7 +417,9 @@ async function run() {
         :placeholder="
           store.taskKind === 'brainstorm'
             ? '聊聊人物、冲突、世界或故事可能性……'
-            : '描述本次希望完成的内容……'
+            : store.taskKind === 'blueprint'
+              ? '描述希望新增或完善的特殊要求与约束，例如限制叙事视角、明确能力代价……'
+              : '描述本次希望完成的内容……'
         "
         @update:value="store.scratch"
         @keydown.ctrl.enter="store.safe(run)"
@@ -382,7 +428,7 @@ async function run() {
         <NButton
           type="primary"
           :loading="store.busy"
-          :disabled="store.imageBusy"
+          :disabled="store.imageBusy || store.directionsBusy || legacy"
           @click="store.safe(run)"
           >{{ store.taskKind === "brainstorm" ? "发送" : "生成结果" }}</NButton
         ><NButton v-if="store.busy" @click="store.stopTask">停止</NButton
@@ -400,13 +446,16 @@ async function run() {
       <p v-if="store.taskError" role="alert" class="review-error">
         {{ store.taskError }}
       </p>
+      <p v-if="legacy" class="field-help">
+        旧版分层规划对话仅供查看，请在大纲规划中重新生成。
+      </p>
       <template v-if="store.taskKind !== 'brainstorm'"
         ><div v-if="store.turns.length" class="result-versions">
           <NSelect
             :value="store.selectedTurnId"
             :options="
               store.turns.map((t) => ({
-                label: '版本 ' + t.number + ' · ' + t.status,
+                label: '版本 ' + t.number + ' · ' + turnStatusLabels[t.status],
                 value: t.id,
               }))
             "

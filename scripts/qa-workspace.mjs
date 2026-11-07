@@ -214,9 +214,9 @@ for (const mode of ["novel", "explore"]) {
     level: "section",
     parentId: null,
     chapterId: null,
-    title: mode === "novel" ? "全局约束与伏笔" : "近期方向与未定空间",
+    title: "视角与认知限制",
     content:
-      "创作地基：先建立驿站日常与来信之谜；主角尚不知道来信者身份。结局可以保留空白。",
+      "使用第三人称有限视角，只呈现阿禾当下能够感知和推断的信息；不得直接揭示来信者身份或其他人物的内心。",
   };
   api["blueprint:save"]({ projectId: p.id, node: section, base: null });
   if (mode === "novel") {
@@ -228,11 +228,12 @@ for (const mode of ["novel", "explore"]) {
       title: "第一卷 · 逆风",
       content: "沿驿站路线寻找寄信者。",
     };
-    api["blueprint:save"]({ projectId: p.id, node: volume, base: null });
-    api["blueprint:save"]({
+    api["outline:save"]({ projectId: p.id, node: volume, base: null });
+    const firstPlanId = randomUUID();
+    api["outline:save"]({
       projectId: p.id,
       node: {
-        id: randomUUID(),
+        id: firstPlanId,
         level: "chapter",
         parentId: volume.id,
         chapterId: chapter.id,
@@ -240,6 +241,38 @@ for (const mode of ["novel", "explore"]) {
         content: "在细节中呈现阿禾的谨慎；信封作为第一个异常。",
       },
       base: null,
+    });
+    const secondChapter = repo.createChapter(p.id);
+    repo.updateChapter(secondChapter.id, { title: "第二章 · 驿站旧路" });
+    const secondVolume = {
+      ...volume,
+      id: randomUUID(),
+      title: "第二卷 · 旧路",
+    };
+    api["outline:save"]({ projectId: p.id, node: secondVolume, base: null });
+    api["outline:save"]({
+      projectId: p.id,
+      base: null,
+      node: {
+        id: randomUUID(),
+        level: "chapter",
+        parentId: secondVolume.id,
+        chapterId: secondChapter.id,
+        title: "第二章安排",
+        content: "沿旧路线调查。",
+      },
+    });
+    api["outline:save"]({
+      projectId: p.id,
+      base: null,
+      node: {
+        id: randomUUID(),
+        level: "scene",
+        parentId: firstPlanId,
+        chapterId: null,
+        title: "驿站门前",
+        content: "阿禾检查门轴后收到来信。",
+      },
     });
   }
 }
@@ -277,16 +310,38 @@ function response(r) {
           ],
     });
   }
-  if (r.kind === "blueprint")
+  if (r.kind === "directions")
+    return JSON.stringify({
+      options: Array.from({ length: r.count }, (_, i) => ({
+        title: [
+          "拆信查水印",
+          "追寻送信人",
+          "向老人求证",
+          "回访旧驿站",
+          "守候第二封信",
+        ][i],
+        content: [
+          "阿禾在灯下展开信纸，发现来自旧驿站的水印，决定先查清纸张来源。",
+          "阿禾沿门外脚印追到集市，试着找到目击送信人的摊主。",
+          "阿禾将信封放在柜台上，询问老人对封蜡图案的记忆。",
+          "阿禾返回上一处驿站，从旧登记册寻找同样的署名。",
+          "阿禾留下记号，等待寄信人再次出现。",
+        ][i],
+      })),
+    });
+  if (r.kind === "blueprint" || r.kind === "outline")
     return JSON.stringify({
       items: Array.from(
         { length: r.target.id ? 1 : r.target.count },
         (_, i) => ({
           title: r.target.id
             ? d.project.blueprint.nodes.find((n) => n.id === r.target.id).title
-            : "来信线索 " + (i + 1),
+            : (r.kind === "blueprint" ? "自定义视角约束 " : "来信线索 ") +
+              (i + 1),
           content:
-            "阿禾先核对信封纸张与驿站登记，再决定沿旧路线寻找寄信者。保留来信者身份，遵守上级规划。",
+            r.kind === "blueprint"
+              ? "仅描写阿禾能够感知和推断的信息，不直接进入其他角色的内心；未知信息保留不确定性。"
+              : "阿禾先核对信封纸张与驿站登记，再决定沿旧路线寻找寄信者。保留来信者身份，遵守上级规划。",
         }),
       ),
     });

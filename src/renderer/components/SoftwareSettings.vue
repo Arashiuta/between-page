@@ -57,6 +57,35 @@ async function move() {
       <div class="settings-card-heading">
         <span class="settings-icon"><AppWindow :size="20" /></span>
         <div>
+          <h2>自由探索</h2>
+          <p>正文审核写入后，自动生成下一章的候选剧情走向</p>
+        </div>
+      </div>
+      <div class="software-setting-row">
+        <div>
+          <label id="direction-count-label" class="field-label"
+            >下一章走向数量</label
+          >
+          <p class="field-help">
+            每次生成 1—5 个选项，也可以自己填写走向。修改后用于下一次生成。
+          </p>
+        </div>
+        <NSelect
+          aria-labelledby="direction-count-label"
+          :value="store.settings?.software.directionCount ?? 3"
+          :options="
+            [1, 2, 3, 4, 5].map((value) => ({ label: value + ' 个', value }))
+          "
+          @update:value="
+            (directionCount) => store.editSoftwareSettings({ directionCount })
+          "
+        />
+      </div>
+    </section>
+    <section class="settings-card">
+      <div class="settings-card-heading">
+        <span class="settings-icon"><AppWindow :size="20" /></span>
+        <div>
           <h2>窗口行为</h2>
           <p>选择点击右上角关闭按钮时的动作</p>
         </div>

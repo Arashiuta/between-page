@@ -16,6 +16,8 @@ import { freedomOptions } from "../../shared/creation";
 import StoryEditor from "../components/StoryEditor.vue";
 import WorkbenchPanel from "../components/WorkbenchPanel.vue";
 import BlueprintEditor from "../components/BlueprintEditor.vue";
+import DirectionsPanel from "../components/DirectionsPanel.vue";
+import { blueprintLabels } from "../../shared/blueprint";
 import CardEditor from "../components/CardEditor.vue";
 import CandidateShelf from "../components/CandidateShelf.vue";
 import ChangeReview from "../components/ChangeReview.vue";
@@ -33,18 +35,75 @@ const store = useWorkspace(),
   historyOpen = ref(false),
   viewing = ref<Revision | null>(null),
   importOpen = ref(false),
+  chapterDragging = ref(""),
+  chapterDrop = ref<{ id: string; position: "before" | "after" } | null>(null),
+  reordering = ref(false),
   importIds = ref<string[]>([]);
+const chapterDragDisabled = computed(
+  () => store.busy || store.directionsBusy || store.saving || reordering.value,
+);
+function endChapterDrag() {
+  chapterDragging.value = "";
+  chapterDrop.value = null;
+}
+function startChapterDrag(event: DragEvent, id: string) {
+  if (chapterDragDisabled.value || !event.dataTransfer) {
+    event.preventDefault();
+    return;
+  }
+  chapterDragging.value = id;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("application/x-story-chapter", id);
+}
+function overChapter(event: DragEvent, id: string) {
+  if (
+    chapterDragDisabled.value ||
+    !chapterDragging.value ||
+    chapterDragging.value === id
+  )
+    return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  chapterDrop.value = {
+    id,
+    position: event.clientY < rect.top + rect.height / 2 ? "before" : "after",
+  };
+}
 const tabs = computed(() => [
   { id: "overview", name: "作品概览" },
   { id: "text", name: "章节正文" },
-  { id: "blueprint", name: "故事蓝图" },
+  { id: "blueprint", name: "额外设定" },
+  ...(store.detail?.project.mode === "novel"
+    ? [{ id: "outline", name: "大纲规划" }]
+    : []),
   { id: "cards", name: "世界与人物" },
   { id: "memory", name: "故事记忆" },
   { id: "images", name: "故事插画" },
 ]);
+const chapterPlan = computed(() =>
+  store.detail?.project.blueprint.nodes.find(
+    (n) => n.level === "chapter" && n.chapterId === store.chapterId,
+  ),
+);
+const relatedPlans = computed(() =>
+  chapterPlan.value
+    ? store.detail!.project.blueprint.nodes.filter(
+        (n) =>
+          n.id === chapterPlan.value!.id ||
+          n.id === chapterPlan.value!.parentId ||
+          n.parentId === chapterPlan.value!.id,
+      )
+    : [],
+);
+function openPlan() {
+  store.planningNodeId = chapterPlan.value?.id ?? "";
+  tab.value = "outline";
+}
 watch(
   () => route.params.id,
   async (id) => {
+    endChapterDrag();
     loading.value = true;
     try {
       await store.openProject(String(id));
@@ -56,7 +115,7 @@ watch(
   { immediate: true },
 );
 async function modeChange(mode: "novel" | "explore") {
-  if (!store.detail || store.busy) return;
+  if (!store.detail || store.busy || store.directionsBusy) return;
   store.scratch();
   await store.flush();
   store.editProject({ mode });
@@ -84,18 +143,56 @@ async function restore(id: string) {
   historyOpen.value = false;
   viewing.value = null;
 }
-async function reorder(id: string, step: number) {
-  if (!store.detail) return;
-  await store.flush();
-  const ids = store.detail.chapters.map((c) => c.id),
-    a = ids.indexOf(id),
-    b = a + step;
-  if (b < 0 || b >= ids.length) return;
-  [ids[a], ids[b]] = [ids[b], ids[a]];
-  store.detail = await store.api<ProjectDetail>("chapter:reorder", {
-    projectId: store.detail.project.id,
-    ids,
-  });
+async function dropChapter(event: DragEvent, targetId: string) {
+  event.preventDefault();
+  if (
+    !store.detail ||
+    chapterDragDisabled.value ||
+    !chapterDrop.value ||
+    chapterDrop.value.id !== targetId
+  )
+    return;
+  const id = chapterDragging.value;
+  const position = chapterDrop.value.position;
+  endChapterDrag();
+  if (
+    !id ||
+    id === targetId ||
+    event.dataTransfer?.getData("application/x-story-chapter") !== id
+  )
+    return;
+  const projectId = store.detail.project.id;
+  reordering.value = true;
+  try {
+    await store.flush();
+    if (store.detail?.project.id !== projectId) return;
+    const original = store.detail.chapters.map((c) => c.id);
+    if (!original.includes(id) || !original.includes(targetId)) return;
+    const ids = original.filter((x) => x !== id);
+    ids.splice(ids.indexOf(targetId) + Number(position === "after"), 0, id);
+    if (ids.every((x, i) => x === original[i])) return;
+    const detail = await store.api<ProjectDetail>("chapter:reorder", {
+      projectId,
+      ids,
+    });
+    if (store.detail?.project.id === projectId) {
+      detail.project = store.detail.project;
+      // Preserve any text edited while the request was in flight.
+      for (const c of detail.chapters) {
+        const local = store.detail.chapters.find((x) => x.id === c.id);
+        if (local)
+          Object.assign(c, {
+            title: local.title,
+            document: local.document,
+            content: local.content,
+          });
+      }
+      store.detail = detail;
+    }
+  } finally {
+    reordering.value = false;
+    endChapterDrag();
+  }
 }
 async function copyCards() {
   if (!store.detail) return;
@@ -126,7 +223,7 @@ async function checkpoint() {
           { label: '自由探索', value: 'explore' },
           { label: '长篇创作', value: 'novel' },
         ]"
-        :disabled="store.busy"
+        :disabled="store.busy || store.directionsBusy"
         style="width: 140px"
         @update:value="(v) => store.safe(() => modeChange(v))"
       /><NButton
@@ -168,7 +265,27 @@ async function checkpoint() {
         <article
           v-for="(c, i) in store.detail.chapters"
           :key="c.id"
-          :class="{ active: store.chapterId === c.id }"
+          :class="{
+            active: store.chapterId === c.id,
+            'chapter-dragging': chapterDragging === c.id,
+            'chapter-drop-before':
+              chapterDrop?.id === c.id && chapterDrop.position === 'before',
+            'chapter-drop-after':
+              chapterDrop?.id === c.id && chapterDrop.position === 'after',
+          }"
+          @dragover="overChapter($event, c.id)"
+          @dragleave="
+            (event) => {
+              if (
+                !(event.currentTarget as HTMLElement).contains(
+                  event.relatedTarget as Node | null,
+                ) &&
+                chapterDrop?.id === c.id
+              )
+                chapterDrop = null;
+            }
+          "
+          @drop="store.safe(() => dropChapter($event, c.id))"
         >
           <button
             class="chapter-link"
@@ -186,17 +303,16 @@ async function checkpoint() {
           </button>
           <div class="chapter-row-actions">
             <button
-              aria-label="章节上移"
-              :disabled="store.busy || i === 0"
-              @click="store.safe(() => reorder(c.id, -1))"
+              class="chapter-drag-handle"
+              aria-label="拖动调整章节顺序"
+              title="拖动调整章节顺序"
+              :disabled="chapterDragDisabled"
+              :draggable="!chapterDragDisabled"
+              @dragstart="startChapterDrag($event, c.id)"
+              @dragend="endChapterDrag"
+              @click.stop
             >
-              ↑</button
-            ><button
-              aria-label="章节下移"
-              :disabled="store.busy || i === store.detail.chapters.length - 1"
-              @click="store.safe(() => reorder(c.id, 1))"
-            >
-              ↓</button
+              ⠿</button
             ><NPopconfirm
               @positive-click="store.safe(() => store.deleteChapter(c.id))"
               ><template #trigger
@@ -212,7 +328,11 @@ async function checkpoint() {
         <section v-if="tab === 'overview'" class="studio-section">
           <h2>作品概览</h2>
           <p>
-            世界与人物、故事蓝图构成故事依据。可直接从已有资料开始写作，各层规划均可留空。
+            额外设定、世界与人物、引入资料和有效故事记忆全程参与创作。{{
+              store.detail.project.mode === "novel"
+                ? "大纲规划安排卷章结构，各层可留空。"
+                : "从当前处境开始，逐章选择故事走向。"
+            }}
           </p>
           <label class="field-label">作品名称</label
           ><NInput
@@ -236,8 +356,25 @@ async function checkpoint() {
                 >{{ store.detail.cards.length }} 份资料</small
               ></button
             ><button @click="tab = 'blueprint'">
-              故事蓝图<br /><small
-                >{{ store.detail.project.blueprint.nodes.length }} 个节点</small
+              额外设定<br /><small
+                >{{
+                  store.detail.project.blueprint.nodes.filter(
+                    (n) => n.level === "section",
+                  ).length
+                }}
+                个条目</small
+              ></button
+            ><button
+              v-if="store.detail.project.mode === 'novel'"
+              @click="tab = 'outline'"
+            >
+              大纲规划<br /><small
+                >{{
+                  store.detail.project.blueprint.nodes.filter(
+                    (n) => n.level !== "section",
+                  ).length
+                }}
+                个节点</small
               ></button
             ><button @click="tab = 'text'">
               章节正文<br /><small>{{ store.detail.chapters.length }} 章</small>
@@ -245,8 +382,42 @@ async function checkpoint() {
           </div>
         </section>
         <section v-else-if="tab === 'text'" class="studio-text">
-          <template v-if="store.chapter"
-            ><div class="prose-heading">
+          <template v-if="store.chapter">
+            <details
+              v-if="store.detail.project.mode === 'novel'"
+              class="chapter-planning"
+              open
+            >
+              <summary>
+                {{
+                  chapterPlan
+                    ? "本章关联大纲 · " + chapterPlan.title
+                    : "本章尚未关联章纲，可以直接写作"
+                }}
+              </summary>
+              <article v-for="n in relatedPlans" :key="n.id">
+                <strong>{{ blueprintLabels[n.level] }} · {{ n.title }}</strong>
+                <p class="planning-content">{{ n.content || "尚未填写" }}</p>
+              </article>
+              <NButton size="small" @click="openPlan">{{
+                chapterPlan ? "编辑本章大纲" : "打开大纲规划"
+              }}</NButton>
+            </details>
+            <div
+              v-if="
+                store.detail.project.mode === 'explore' &&
+                store.chapter.explorationSource &&
+                !store.chapter.content.trim()
+              "
+              class="review-banner"
+            >
+              <strong>本章将按此走向生成</strong>
+              <p class="planning-content">
+                {{ store.chapter.explorationSource.instruction }}
+              </p>
+              <span>点击“写开篇”重试生成，继续使用当前空章。</span>
+            </div>
+            <div class="prose-heading">
               <NInput
                 :value="store.chapter.title"
                 @update:value="(v) => store.editChapter({ title: v })"
@@ -324,7 +495,10 @@ async function checkpoint() {
                 @click="store.safe(() => tool('check'))"
                 >检查故事</NButton
               ><NButton
-                v-if="store.chapter.content.trim()"
+                v-if="
+                  store.chapter.content.trim() &&
+                  store.detail.project.mode === 'novel'
+                "
                 :disabled="store.busy"
                 @click="
                   store.safe(async () => {
@@ -334,8 +508,14 @@ async function checkpoint() {
                 "
                 >新建下一章</NButton
               >
-            </div></template
-          >
+            </div>
+            <DirectionsPanel
+              v-if="
+                store.detail.project.mode === 'explore' &&
+                store.chapter.content.trim()
+              "
+            />
+          </template>
           <div v-else class="inline-empty">
             <p>创建一个空章开始写作。</p>
             <NButton type="primary" @click="store.safe(store.newChapter)"
@@ -344,7 +524,17 @@ async function checkpoint() {
           </div>
         </section>
         <section v-else-if="tab === 'blueprint'" class="studio-section">
-          <BlueprintEditor />
+          <BlueprintEditor key="blueprint" />
+        </section>
+        <section
+          v-else-if="tab === 'outline' && store.detail.project.mode === 'novel'"
+          class="studio-section"
+        >
+          <BlueprintEditor
+            key="outline"
+            domain="outline"
+            @chapter="tab = 'text'"
+          />
         </section>
         <section v-else-if="tab === 'cards'" class="studio-section">
           <div class="section-toolbar">
@@ -419,7 +609,7 @@ async function checkpoint() {
             >
           </div>
           <p class="field-help">
-            记忆须有已采用正文来源；蓝图中的未来事件不能成为事实。
+            记忆须有已采用正文来源；额外设定中的未来事件不能成为事实。
           </p>
           <article
             v-for="m in store.detail.memories"
@@ -522,6 +712,25 @@ async function checkpoint() {
   </main>
 </template>
 <style scoped>
+.chapter-planning {
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.chapter-planning summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.chapter-planning article {
+  margin: 12px 0;
+}
+.planning-content {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+}
 .studio-page {
   height: 100%;
   min-height: 0;
@@ -586,6 +795,25 @@ async function checkpoint() {
 }
 .studio-chapters article.active {
   background: #e6eee9;
+}
+.studio-chapters article.chapter-dragging {
+  opacity: 0.45;
+}
+.studio-chapters article.chapter-drop-before {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+.studio-chapters article.chapter-drop-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
+.chapter-row-actions .chapter-drag-handle {
+  cursor: grab;
+  font-size: 18px;
+}
+.chapter-row-actions .chapter-drag-handle:active {
+  cursor: grabbing;
+}
+.chapter-row-actions .chapter-drag-handle:disabled {
+  cursor: default;
 }
 .chapter-link {
   display: block;

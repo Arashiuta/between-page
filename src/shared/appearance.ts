@@ -88,6 +88,7 @@ export const appearanceSchema = z.object({
 });
 export const softwarePatchSchema = z.object({
   closeAction: z.enum(["ask", "minimize", "quit"]).optional(),
+  directionCount: z.number().int().min(1).max(5).optional(),
   appearance: appearanceSchema.partial().optional(),
 });
 export function normalizeSoftware(input: unknown): SoftwareSettings {
@@ -104,6 +105,13 @@ export function normalizeSoftware(input: unknown): SoftwareSettings {
     if (result.success) Object.assign(appearance, { [key]: result.data });
   }
   return {
+    directionCount: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .catch(3)
+      .parse(raw.directionCount),
     closeAction: z
       .enum(["ask", "minimize", "quit"])
       .catch("ask")

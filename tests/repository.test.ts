@@ -65,7 +65,7 @@ describe("版本与关联数据", () => {
     );
     expect(f.repo.listRevisions(f.chapter.id)[0].content).toBe("新草稿");
   });
-  it("删除章节清理本章版本与记忆，解除章纲关联，保留独立蓝图", async () => {
+  it("删除章节清理本章版本与记忆，解除章纲关联，保留独立额外设定", async () => {
     const f = fixture();
     node(f, "chapter", "本章安排", { chapterId: f.chapter.id });
     f.repo.updateChapter(f.chapter.id, { document: textToDocument("正文") });

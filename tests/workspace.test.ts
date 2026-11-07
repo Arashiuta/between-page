@@ -10,6 +10,7 @@ import type {
   SettingsInput,
   DesktopAPI,
   ProgressEvent,
+  Mode,
 } from "../src/shared/types";
 import { runCreationTask } from "../src/main/conversations";
 beforeEach(() => {
@@ -29,8 +30,8 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-function setup() {
-  const f = fixture();
+function setup(mode: Mode = "novel") {
+  const f = fixture(mode);
   let progress: (e: ProgressEvent) => void = () => {};
   const settings: Settings = {
     software: normalizeSoftware({}),
@@ -129,6 +130,220 @@ function setup() {
   };
 }
 describe("工作台自动保存与目标恢复", () => {
+  it("探索正文未采用时不生成走向，审核写入最终编辑稿后只自动调用一次", async () => {
+    const f = setup("explore");
+    await f.store.openProject(f.project.id);
+    f.setResponse("待审核的原始候选");
+    await f.store.runTask("opening");
+    expect(
+      f.invoke.mock.calls.filter(
+        ([a, p]) => a === "ai:run" && p.kind === "directions",
+      ),
+    ).toHaveLength(0);
+    const set = f.store.changeSets[0];
+    f.setResponse(
+      '{"options":[{"title":"调查","content":"查看水印"},{"title":"询问","content":"询问老人"},{"title":"等待","content":"等待来信"}]}',
+    );
+    await f.store.applyChanges(set.id, [
+      { id: set.changes[0].id, after: "作者审核后真正写入的正文" },
+    ]);
+    await vi.waitFor(() => expect(f.store.directionsBusy).toBe(false));
+    expect(f.repo.getChapter(f.chapter.id).content).toBe(
+      "作者审核后真正写入的正文",
+    );
+    expect(
+      f.invoke.mock.calls.filter(
+        ([a, p]) => a === "ai:run" && p.kind === "directions",
+      ),
+    ).toHaveLength(1);
+    expect(f.store.directionsError).toBe("");
+    const view = f.api["directions:get"]({
+      projectId: f.project.id,
+      chapterId: f.chapter.id,
+    }) as any;
+    expect(view.state.options).toHaveLength(3);
+    expect(f.repo.getDetail(f.project.id).memories).toHaveLength(0);
+    expect(f.repo.getChapter(f.chapter.id).acceptedRevisionId).toBeNull();
+    await expect(
+      f.store.applyChanges(set.id, [
+        { id: set.changes[0].id, after: "重复写入" },
+      ]),
+    ).rejects.toThrow("已采用");
+    expect(
+      f.invoke.mock.calls.filter(
+        ([a, p]) => a === "ai:run" && p.kind === "directions",
+      ),
+    ).toHaveLength(1);
+  });
+  it("探索自动走向失败不会把成功的正文审核显示为失败，并可单独重试", async () => {
+    const f = setup("explore");
+    await f.store.openProject(f.project.id);
+    f.setResponse("正文候选");
+    await f.store.runTask("opening");
+    const set = f.store.changeSets[0];
+    f.setResponse("无法解析的走向结果");
+    await expect(
+      f.store.applyChanges(set.id, [
+        { id: set.changes[0].id, after: "已写入正文" },
+      ]),
+    ).resolves.toMatchObject({ status: "applied" });
+    await vi.waitFor(() => expect(f.store.directionsBusy).toBe(false));
+    expect(f.store.directionsError).not.toBe("");
+    expect(f.repo.getChapter(f.chapter.id).content).toBe("已写入正文");
+    f.store.settings!.software.directionCount = 1;
+    f.setResponse('{"options":[{"title":"新方向","content":"沿河寻找线索"}]}');
+    await f.store.generateDirections(f.chapter.id);
+    expect(f.store.directionsError).toBe("");
+    expect(
+      (
+        f.api["directions:get"]({
+          projectId: f.project.id,
+          chapterId: f.chapter.id,
+        }) as any
+      ).state.options,
+    ).toHaveLength(1);
+  });
+  it("双击生成下一章仅创建一个空章，生成失败后在同一章重试", async () => {
+    const f = setup("explore");
+    f.repo.updateChapter(f.chapter.id, {
+      document: textToDocument("来源正文"),
+    });
+    await f.store.openProject(f.project.id);
+    const view = f.api["directions:get"]({
+      projectId: f.project.id,
+      chapterId: f.chapter.id,
+    }) as any;
+    const chosen = f.api["directions:choose"]({
+      projectId: f.project.id,
+      chapterId: f.chapter.id,
+      sourceFingerprint: view.sourceFingerprint,
+      basis: view.basis,
+      selectedId: null,
+      instruction: "先查水印",
+    }) as any;
+    const original = f.invoke.getMockImplementation()!;
+    f.invoke.mockImplementation(async (a, p) => {
+      if (a === "ai:run") throw Error("生成失败");
+      return original(a, p);
+    });
+    await Promise.all([
+      f.store.createExplorationChapter(f.chapter.id, chosen),
+      f.store.createExplorationChapter(f.chapter.id, chosen),
+    ]);
+    expect(f.repo.getDetail(f.project.id).chapters).toHaveLength(2);
+    expect(f.store.chapter?.explorationSource?.instruction).toBe("先查水印");
+    const id = f.store.chapterId;
+    expect(f.store.taskError).toBe("生成失败");
+    f.invoke.mockImplementation(original);
+    f.setResponse("根据水印展开的下一章正文");
+    await f.store.runTask("opening");
+    expect(f.store.chapterId).toBe(id);
+    expect(f.store.result?.type).toBe("changes");
+    expect(f.repo.getDetail(f.project.id).chapters).toHaveLength(2);
+  });
+  it("切换作品时取消未完成走向，迟到的结果不写入任何章节", async () => {
+    const f = setup("explore"),
+      started = deferred<void>(),
+      released = deferred<void>();
+    f.repo.updateChapter(f.chapter.id, {
+      document: textToDocument("来源正文"),
+    });
+    await f.store.openProject(f.project.id);
+    const other = f.repo.createProject({
+      title: "另一部作品",
+      premise: "",
+      mode: "explore",
+    });
+    const original = f.invoke.getMockImplementation()!,
+      controller = new AbortController();
+    f.invoke.mockImplementation(async (a, p) => {
+      if (a === "ai:run" && p.kind === "directions")
+        return runCreationTask(f.repo, p, {
+          ...options,
+          signal: controller.signal,
+          progress: () => {},
+          generate: async () => {
+            started.resolve();
+            await released.promise;
+            return '{"options":[{"title":"一","content":"查证一"},{"title":"二","content":"查证二"},{"title":"三","content":"查证三"}]}';
+          },
+        });
+      if (a === "ai:cancel") {
+        controller.abort();
+        released.resolve();
+        return true;
+      }
+      return original(a, p);
+    });
+    const generating = f.store.generateDirections(f.chapter.id);
+    await started.promise;
+    await f.store.openProject(other.id);
+    await generating;
+    expect(f.store.detail?.project.id).toBe(other.id);
+    expect(f.store.directionsBusy).toBe(false);
+    expect(
+      (
+        f.api["directions:get"]({
+          projectId: f.project.id,
+          chapterId: f.chapter.id,
+        }) as any
+      ).state,
+    ).toBeNull();
+    expect(
+      (
+        f.api["directions:get"]({
+          projectId: other.id,
+          chapterId: f.store.chapterId,
+        }) as any
+      ).state,
+    ).toBeNull();
+    expect(f.repo.getChapter(f.chapter.id).content).toBe("来源正文");
+  });
+  it("建章后刷新期间切换作品，不跳转或向新作品发起旧章写作", async () => {
+    const f = setup("explore"),
+      started = deferred<void>(),
+      released = deferred<void>();
+    f.repo.updateChapter(f.chapter.id, {
+      document: textToDocument("来源正文"),
+    });
+    await f.store.openProject(f.project.id);
+    const view = f.api["directions:get"]({
+      projectId: f.project.id,
+      chapterId: f.chapter.id,
+    }) as any;
+    const chosen = f.api["directions:choose"]({
+      projectId: f.project.id,
+      chapterId: f.chapter.id,
+      sourceFingerprint: view.sourceFingerprint,
+      basis: view.basis,
+      selectedId: null,
+      instruction: "调查线索",
+    }) as any;
+    const other = f.repo.createProject({
+      title: "新作品",
+      premise: "",
+      mode: "explore",
+    });
+    const original = f.invoke.getMockImplementation()!;
+    f.invoke.mockImplementation(async (a, p) => {
+      if (a === "project:get" && p === f.project.id) {
+        started.resolve();
+        await released.promise;
+      }
+      return original(a, p);
+    });
+    const creating = f.store.createExplorationChapter(f.chapter.id, chosen);
+    await started.promise;
+    await f.store.openProject(other.id);
+    const currentChapter = f.store.chapterId;
+    released.resolve();
+    await creating;
+    expect(f.store.detail?.project.id).toBe(other.id);
+    expect(f.store.chapterId).toBe(currentChapter);
+    expect(f.invoke.mock.calls.filter(([a]) => a === "ai:run")).toHaveLength(0);
+    expect(f.repo.getDetail(f.project.id).chapters).toHaveLength(2);
+    expect(f.repo.getDetail(other.id).chapters).toHaveLength(1);
+  });
   it("切换模型保持同一对话，并将选择用于新请求及重开作品", async () => {
     const f = setup();
     await f.store.openProject(f.project.id);
@@ -175,7 +390,7 @@ describe("工作台自动保存与目标恢复", () => {
     expect(f.store.result?.type).toBe("changes");
     expect(f.store.selectedTurn?.sourceSnapshot).toHaveLength(1);
   });
-  it("现有蓝图目标经过 IPC 校验后仍恢复可审核结果", async () => {
+  it("现有额外设定目标经过 IPC 校验后仍恢复可审核结果", async () => {
     const f = setup();
     const n = {
       id: crypto.randomUUID(),

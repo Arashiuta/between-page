@@ -48,34 +48,36 @@ export function request(
     kind,
   };
   const target =
-    kind === "blueprint"
+    kind === "blueprint" || kind === "outline"
       ? {
           target: {
-            level: base.mode === "novel" ? "synopsis" : "section",
+            level: kind === "outline" ? "synopsis" : "section",
             count: 1,
           },
         }
-      : kind === "check"
-        ? {
-            scope: { type: "current", chapterId: f.chapter.id },
-            aspect: "continuity",
-          }
-        : [
-              "opening",
-              "continue",
-              "polish",
-              "notes",
-              "title",
-              "prompt",
-            ].includes(kind)
-          ? { chapterId: f.chapter.id }
-          : {};
+      : kind === "directions"
+        ? { chapterId: f.chapter.id, count: 3 }
+        : kind === "check"
+          ? {
+              scope: { type: "current", chapterId: f.chapter.id },
+              aspect: "continuity",
+            }
+          : [
+                "opening",
+                "continue",
+                "polish",
+                "notes",
+                "title",
+                "prompt",
+              ].includes(kind)
+            ? { chapterId: f.chapter.id }
+            : {};
   return { ...base, ...target, ...patch } as TaskRequest;
 }
 export function node(
   f: Fixture,
   level: BlueprintLevel = "section",
-  content = "蓝图的全部内容",
+  content = "额外设定的全部内容",
   other: Record<string, unknown> = {},
 ) {
   const n = {
@@ -83,11 +85,15 @@ export function node(
     level,
     parentId: null,
     chapterId: null,
-    title: "蓝图节点",
+    title: "额外设定节点",
     content,
     ...other,
   };
-  f.api["blueprint:save"]({ projectId: f.project.id, node: n, base: null });
+  f.api[level === "section" ? "blueprint:save" : "outline:save"]({
+    projectId: f.project.id,
+    node: n,
+    base: null,
+  });
   return n;
 }
 export async function run(

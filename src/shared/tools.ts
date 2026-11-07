@@ -1,7 +1,8 @@
 import type { Mode, TaskKind } from "./types";
 export const toolGroups: { id: string; name: string; kinds: TaskKind[] }[] = [
   { id: "brainstorm", name: "灵感脑暴", kinds: ["brainstorm"] },
-  { id: "blueprint", name: "完善蓝图", kinds: ["blueprint"] },
+  { id: "blueprint", name: "完善额外设定", kinds: ["blueprint"] },
+  { id: "outline", name: "大纲规划", kinds: ["outline"] },
   { id: "writing", name: "正文写作", kinds: ["opening", "continue"] },
   { id: "polish", name: "文段打磨", kinds: ["polish"] },
   { id: "checking", name: "故事检查", kinds: ["check"] },
@@ -13,7 +14,8 @@ export const toolGroupFor = (kind: TaskKind) =>
 export const modeTools = {
   explore: {
     blueprintLevels: ["section"],
-    description: "跟随当前处境探索；用自由分区记录近期方向，保留未定空间。",
+    description:
+      "跟随当前处境写作，选择下一章走向；全程遵守额外设定、资料与有效记忆，不参考保留的大纲。",
     writing: "从已有处境开始或继续故事，不预设全书终局。",
     prompts: {
       brainstorm:
@@ -21,7 +23,10 @@ export const modeTools = {
       settings:
         "自由探索设定：只补充本次需要的人物与世界信息，允许保留空白，不强迫建立完整设定表。",
       blueprint:
-        "自由探索蓝图：只处理指定自由分区，记录方向、近期安排、伏笔或待定问题，不创建层级大纲。保存的其他层级仍须参考。",
+        "自由探索额外设定：按作者要求新增或完善自定义特殊要求与故事约束，供后续创作持续参考，如视角限制、能力代价、感情线边界。分类自由，不自行生成章纲、剧情梗概或逐章安排，不修改资料与正文。",
+      outline: "自由探索不使用大纲规划。",
+      directions:
+        "自由探索剧情走向：基于当前章完整正文、全部额外设定、世界与人物、引入资料和有效记忆，提出不同的下一章可能走向。不得违背已写事实、人物认知和约束。走向只是候选，不是已发生事实。",
       opening: "自由探索开篇：允许从一个处境、一段关系或一个问题即兴开始。",
       continue:
         "自由探索续写：跟随当前章最后的处境推进，不替作者决定全书结局。",
@@ -35,22 +40,27 @@ export const modeTools = {
     },
   },
   novel: {
-    blueprintLevels: ["section", "synopsis", "volume", "chapter", "scene"],
-    description: "从全局约束逐层规划到场景；各层均可留空。",
-    writing: "遵循已有蓝图与前文推进，缺少某层规划时正常写作。",
+    blueprintLevels: ["section"],
+    description:
+      "遵守额外设定、资料与有效记忆，按大纲规划逐章推进；各层大纲均可留空。",
+    writing:
+      "参考全部额外设定、资料、有效记忆与大纲，按本章规划推进，缺少规划时正常写作。",
     prompts: {
       brainstorm:
         "长篇创作聊天：围绕全书构想、结构、人物发展和伏笔交流，提供灵感，不进行规划写入。",
       settings:
-        "长篇创作设定：完善长期人物约束、世界规则、叙事偏好，结合全书蓝图指出需要协调处。",
+        "长篇创作设定：完善长期人物约束、世界规则、叙事偏好，结合全书额外设定指出需要协调处。",
       blueprint:
-        "长篇创作蓝图：按指定总纲、卷纲、章纲、场景或全局分区修改，遵守上级约束与人物发展因果。规划层级可留空。",
+        "长篇创作额外设定：按作者要求新增或完善自定义特殊要求与故事约束，供后续创作持续参考，如视角限制、能力代价、感情线边界。分类自由，已有大纲仅作背景参考，不能作为输出模板；不自行生成章纲、剧情梗概或逐章安排，不修改大纲、资料与正文。",
+      outline:
+        "长篇大纲规划：按指定总纲、卷纲、章纲或场景细纲修改。参考全部额外设定、资料与有效记忆，遵守上级规划和人物发展因果。各层可留空，未来计划不得冒充已发生事实。",
+      directions: "长篇模式不生成探索走向，请使用大纲规划。",
       opening:
         "长篇创作开篇：参考关联章纲和场景细纲及全书安排，未规划处可合理发挥，不要求先补全所有规划。",
       continue:
         "长篇创作续写：从正文结尾推进，兼顾本章阶段、全书伏笔和人物发展，不提前兑现未来计划。",
       polish:
-        "长篇创作打磨：完整参考当前章，同时参考关联章纲、场景细纲与上级蓝图，只改选区。",
+        "长篇创作打磨：完整参考当前章，同时参考关联章纲、场景细纲与所属卷纲，只改选区。",
       check:
         "长篇创作检查：检查正文与全书规划、人物发展、时间与认知的一致性，区分计划与已发生事实。",
       notes:
@@ -72,7 +82,9 @@ export const modeTools = {
 export const toolNames: Record<TaskKind, string> = {
   brainstorm: "灵感脑暴",
   settings: "完善设定",
-  blueprint: "完善蓝图",
+  blueprint: "完善额外设定",
+  outline: "大纲规划",
+  directions: "下一章走向",
   opening: "开篇",
   continue: "续写",
   polish: "文段打磨",

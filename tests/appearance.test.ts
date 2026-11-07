@@ -22,6 +22,22 @@ import {
 } from "../src/main/storage";
 
 describe("外观设置", () => {
+  it("剧情走向数量默认3，可保存1至5，拒绝越界或非整数且保留原设置", () => {
+    const repo = new StoryRepository(":memory:");
+    try {
+      expect(softwareSettings(repo).directionCount).toBe(3);
+      for (const directionCount of [1, 3, 5]) {
+        saveSoftwareSettings(repo, { directionCount });
+        expect(softwareSettings(repo).directionCount).toBe(directionCount);
+      }
+      for (const directionCount of [0, 6, 2.5])
+        expect(() => saveSoftwareSettings(repo, { directionCount })).toThrow();
+      expect(softwareSettings(repo).directionCount).toBe(5);
+      expect(normalizeSoftware({ directionCount: 99 }).directionCount).toBe(3);
+    } finally {
+      repo.close();
+    }
+  });
   it("旧设置与损坏字段逐项补默认，不影响有效的关闭偏好", () => {
     expect(
       normalizeSoftware({
@@ -30,6 +46,7 @@ describe("外观设置", () => {
       }),
     ).toEqual({
       closeAction: "quit",
+      directionCount: 3,
       appearance: { ...defaultAppearance(), editorFontSize: 22 },
     });
     expect(normalizeSoftware(null).appearance).toEqual(defaultAppearance());
@@ -64,6 +81,7 @@ describe("外观设置", () => {
       saveSoftwareSettings(repo, { appearance: defaultAppearance() });
       expect(softwareSettings(repo)).toEqual({
         closeAction: "minimize",
+        directionCount: 3,
         appearance: defaultAppearance(),
       });
     } finally {

@@ -8,10 +8,10 @@ import type {
   ProposedChange,
   TaskRequest,
 } from "../shared/types";
-import { basis, fingerprint } from "./context";
+import { basis, explorationBasis, fingerprint } from "./context";
 import { replaceSelection, appendDocument } from "./document-edit";
 import { textToDocument } from "../shared/document";
-import { validateBlueprint } from "../shared/blueprint";
+import { isLegacyPlanning, validateBlueprint } from "../shared/blueprint";
 import { memoryKinds } from "../shared/types";
 import { snapshotBlueprint } from "./blueprint-history";
 const cleanJSON = (s: string) =>
@@ -125,7 +125,13 @@ export function buildChangeSet(
       .strict()
       .parse(cleanJSON(text)).title;
     add({ type: "title", chapterId: chapter!.id }, chapter!.title, title);
-  } else if (r.kind === "blueprint") {
+  } else if (r.kind === "blueprint" || r.kind === "outline") {
+    if (
+      (r.kind === "blueprint" && r.target.level !== "section") ||
+      (r.kind === "outline" &&
+        (r.mode !== "novel" || r.target.level === "section"))
+    )
+      throw new Error("规划目标超出本工具权限。");
     const parsed = z
       .object({
         items: z
@@ -145,7 +151,7 @@ export function buildChangeSet(
     const target = r.target,
       existing = d.project.blueprint.nodes.find((n) => n.id === target.id);
     if (parsed.items.length !== (target.id ? 1 : target.count))
-      throw new Error("蓝图结果数量与目标不一致。");
+      throw new Error("额外设定结果数量与目标不一致。");
     for (const i of parsed.items) {
       const node = existing
         ? { ...existing, title: i.title, content: i.content }
@@ -317,6 +323,8 @@ export function applyChangeSet(
   return repo.db.transaction(() => {
     const set = getChangeSet(repo, projectId, id),
       d = repo.getDetail(projectId);
+    if (isLegacyPlanning(set))
+      throw new Error("这是旧版分层规划建议，请在大纲规划中重新生成后采用。");
     if (set.mode !== d.project.mode)
       throw new Error("请切回生成建议时的创作模式。");
     if (set.basis !== basis(repo, projectId))
@@ -335,6 +343,7 @@ export function applyChangeSet(
       {
         settings: ["setting", "project-setting"],
         blueprint: ["blueprint"],
+        outline: ["blueprint"],
         opening: ["prose"],
         continue: ["prose"],
         polish: ["prose"],
@@ -344,6 +353,13 @@ export function applyChangeSet(
     for (const c of set.changes.filter((c) => !c.applied)) {
       if (!allowed[set.kind]?.includes(c.target.type))
         throw new Error("修改目标超出本工具权限。");
+      if (
+        c.target.type === "blueprint" &&
+        ((set.kind === "blueprint" && c.target.node.level !== "section") ||
+          (set.kind === "outline" &&
+            (d.project.mode !== "novel" || c.target.node.level === "section")))
+      )
+        throw new Error("规划目标超出本工具权限。");
       if (
         c.target.type === "prose" &&
         c.target.operation !==
@@ -358,6 +374,27 @@ export function applyChangeSet(
         throw new Error("正文写入动作与工具不匹配。");
       if (c.targetBase !== fingerprint(currentTarget(d, c.target)))
         throw new Error("原目标已变化，请重新生成，避免覆盖后来的编辑。");
+      if (
+        set.mode === "explore" &&
+        c.target.type === "prose" &&
+        c.target.operation === "opening"
+      ) {
+        const chapterId = c.target.chapterId;
+        const source = d.chapters.find(
+          (ch) => ch.id === chapterId,
+        )?.explorationSource;
+        if (source) {
+          const previous = d.chapters.find((ch) => ch.id === source.chapterId);
+          if (
+            !previous ||
+            fingerprint(previous.document) !== source.sourceFingerprint ||
+            source.basis !== explorationBasis(repo, projectId, previous.id)
+          )
+            throw new Error(
+              "上一章正文或故事依据已变化，请更新走向后重新生成。",
+            );
+        }
+      }
     }
     if (
       !inputs.length ||
@@ -389,7 +426,11 @@ export function applyChangeSet(
       changeSetId: id,
     });
     if (chosen.some((c) => c.target.type === "blueprint"))
-      snapshotBlueprint(repo, projectId);
+      snapshotBlueprint(
+        repo,
+        projectId,
+        set.kind === "outline" ? "outline" : "blueprint",
+      );
     const checkpointed = new Set<string>();
     for (const c of chosen) {
       const t = c.target;

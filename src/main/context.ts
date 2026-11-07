@@ -15,6 +15,30 @@ import { rolePrompt } from "../shared/roles";
 import { roleSettings } from "./roles";
 export const fingerprint = (v: unknown) =>
   createHash("sha256").update(JSON.stringify(v)).digest("hex");
+export function applicableMemories(
+  d: ProjectDetail,
+  chapterId?: string,
+  includeCurrent = false,
+) {
+  const chapter = d.chapters.find((c) => c.id === chapterId);
+  return d.memories.filter((m) => {
+    if (!m.active) return false;
+    if (m.manual && !m.chapterId) return true;
+    const source = d.chapters.find((c) => c.id === m.chapterId);
+    if (
+      !source ||
+      source.needsReview ||
+      !source.acceptedRevisionId ||
+      source.acceptedRevisionId !== m.revisionId
+    )
+      return false;
+    return (
+      !chapter ||
+      source.position < chapter.position ||
+      (includeCurrent && source.id === chapter.id)
+    );
+  });
+}
 export function basis(repo: StoryRepository, id: string) {
   const d = repo.getDetail(id),
     p = d.project;
@@ -26,7 +50,11 @@ export function basis(repo: StoryRepository, id: string) {
     freedom: p.creativeFreedom,
     world: p.world,
     style: p.style,
-    blueprint: p.blueprint,
+    blueprint: {
+      nodes: p.blueprint.nodes.filter(
+        (n) => p.mode === "novel" || n.level === "section",
+      ),
+    },
     cards: d.cards
       .map(({ updatedAt, ...c }) => c)
       .sort((a, b) => a.id.localeCompare(b.id)),
@@ -35,7 +63,29 @@ export function basis(repo: StoryRepository, id: string) {
       filename: i.filename,
       notes: i.notes,
     })),
-    memories: d.memories.filter((m) => m.active),
+    memories: applicableMemories(d),
+  });
+}
+export function explorationBasis(
+  repo: StoryRepository,
+  projectId: string,
+  chapterId: string,
+) {
+  const d = repo.getDetail(projectId),
+    source = d.chapters.find((c) => c.id === chapterId);
+  if (!source) throw new Error("来源章节不存在。");
+  return fingerprint({
+    basis: basis(repo, projectId),
+    chapters: d.chapters
+      .filter((c) => c.position <= source.position)
+      .map((c) => ({
+        id: c.id,
+        position: c.position,
+        title: c.title,
+        document: c.document,
+        acceptedRevisionId: c.acceptedRevisionId,
+        needsReview: c.needsReview,
+      })),
   });
 }
 export function referenceImages(repo: StoryRepository, d: ProjectDetail) {
@@ -108,14 +158,22 @@ export async function buildContext(
       creativeFreedom: p.creativeFreedom,
     }),
   );
-  for (const n of orderedBlueprint(p.blueprint.nodes)) {
+  for (const n of orderedBlueprint(
+    p.blueprint.nodes.filter(
+      (n) => p.mode === "novel" || n.level === "section",
+    ),
+  )) {
     const parent = p.blueprint.nodes.find((x) => x.id === n.parentId);
     const linked = d.chapters.find((c) => c.id === n.chapterId);
     add(
-      `蓝图/${blueprintLabels[n.level]}/${n.title} [${n.id}]`,
-      "1 蓝图（未来计划）",
+      `${n.level === "section" ? "额外设定" : "大纲"}/${blueprintLabels[n.level]}/${n.title} [${n.id}]`,
+      n.level === "section" ? "1 额外设定约束" : "2 大纲（未来计划）",
       [
-        parent ? `上级规划：${parent.title} [${parent.id}]` : "全局规划节点",
+        n.level === "section"
+          ? "作者自定义的特殊要求与故事约束，创作时持续参考"
+          : parent
+            ? `上级规划：${parent.title} [${parent.id}]`
+            : "全局规划节点",
         linked
           ? `关联正文章节：第 ${linked.position} 章 ${linked.title} [${linked.id}]`
           : "",
@@ -141,27 +199,62 @@ export async function buildContext(
       : undefined;
   if ("chapterId" in r && r.chapterId && !chapter)
     throw new Error("目标章节不属于当前故事。");
-  const valid = d.chapters.filter(
-    (c) =>
-      c.acceptedRevisionId &&
-      !c.needsReview &&
-      (r.kind === "brainstorm" ||
-        r.kind === "settings" ||
-        r.kind === "blueprint" ||
-        r.kind === "check" ||
-        !chapter ||
-        c.position < chapter.position),
-  );
-  const accepted = new Map(valid.map((c) => [c.id, c.acceptedRevisionId]));
-  const memories = d.memories.filter(
-    (m) =>
-      m.active &&
-      (m.manual || (m.chapterId && accepted.get(m.chapterId) === m.revisionId)),
-  );
+  if (p.mode === "novel" && chapter) {
+    const plan = p.blueprint.nodes.find(
+      (n) => n.level === "chapter" && n.chapterId === chapter.id,
+    );
+    const related = plan
+      ? p.blueprint.nodes.filter(
+          (n) =>
+            n.id === plan.id ||
+            n.id === plan.parentId ||
+            n.parentId === plan.id ||
+            n.level === "synopsis",
+        )
+      : [];
+    add(
+      "当前章关联大纲与推进阶段",
+      "本次写作目标",
+      plan
+        ? JSON.stringify(related) +
+            "\n按本章阶段推进，不提前兑现后续章纲和伏笔。"
+        : "本章尚未关联章纲，可基于已有故事依据正常写作。",
+    );
+  }
+  if (
+    p.mode === "explore" &&
+    chapter?.explorationSource &&
+    r.kind === "opening"
+  ) {
+    const source = chapter.explorationSource;
+    const previous = d.chapters.find((c) => c.id === source.chapterId);
+    if (
+      !previous ||
+      fingerprint(previous.document) !== source.sourceFingerprint ||
+      source.basis !== explorationBasis(repo, p.id, previous.id)
+    )
+      throw new Error("上一章正文或故事依据已变化，请返回上一章更新走向。");
+    add(
+      `下一章来源全文/${previous.title} [${previous.id}]`,
+      "3 来源正文草稿",
+      previous.content,
+    );
+    add(
+      "作者选定的本章走向（写作要求，尚未发生）",
+      "本次写作目标",
+      source.instruction,
+    );
+  }
+  const memories = applicableMemories(d, chapter?.id, r.kind === "directions");
   add(
     "有效记忆（已发生事实）",
     "3 事实",
-    memories.map((m) => `[${m.chapterId ?? "手动"}] ${m.content}`).join("\n"),
+    memories
+      .map(
+        (m) =>
+          `[${m.chapterId ?? "手动"} / ${m.kind} / ${m.revisionId ?? "手工记录"}] ${m.content}`,
+      )
+      .join("\n"),
   );
   if (r.kind === "brainstorm") {
     const sets = repo.db
@@ -171,7 +264,19 @@ export async function buildContext(
       .map((x) => JSON.parse(x.payload))
       .filter(
         (x) =>
-          ["settings", "blueprint"].includes(x.kind) && x.status !== "applied",
+          [
+            "settings",
+            "blueprint",
+            ...(p.mode === "novel" ? ["outline"] : []),
+          ].includes(x.kind) &&
+          x.status !== "applied" &&
+          x.changes.some(
+            (c: any) =>
+              !c.applied &&
+              (p.mode === "novel" ||
+                c.target.type !== "blueprint" ||
+                c.target.node.level === "section"),
+          ),
       );
     add(
       "未采用候选（仅供讨论，不是正式设定）",
@@ -180,7 +285,13 @@ export async function buildContext(
         candidates.map((c) => ({
           title: c.title,
           changes: c.changes
-            .filter((x: any) => !x.applied)
+            .filter(
+              (x: any) =>
+                !x.applied &&
+                (p.mode === "novel" ||
+                  x.target.type !== "blueprint" ||
+                  x.target.node.level === "section"),
+            )
             .map((x: any) => ({ target: x.target, content: x.after })),
         })),
       ),
@@ -280,7 +391,13 @@ export async function buildContext(
   // Previous prose is optional continuity context; keep the nearest chapters that fit, preserving complete current text.
   if (!["brainstorm", "check", "notes"].includes(r.kind)) {
     const earlier = d.chapters.filter(
-      (c) => !chapter || c.position < chapter.position,
+      (c) =>
+        (!chapter || c.position < chapter.position) &&
+        !(
+          p.mode === "explore" &&
+          r.kind === "opening" &&
+          chapter?.explorationSource?.chapterId === c.id
+        ),
     );
     for (const c of earlier.slice(0, -2))
       omitted.push(`较早章节正文：${c.title} [${c.id}]`);

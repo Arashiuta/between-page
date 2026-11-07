@@ -6,8 +6,8 @@ import { validateBlueprint, orderedBlueprint } from "../src/shared/blueprint";
 import { textToDocument } from "../src/shared/document";
 import { proposal } from "./workbench-fixture";
 import { applyChangeSet } from "../src/main/changes";
-describe("单一蓝图与职责边界", () => {
-  it("保存后立即参考，章纲场景只归属蓝图，正文记录不保存规划", async () => {
+describe("额外设定与大纲的职责边界", () => {
+  it("保存后立即参考，章纲场景归属大纲，正文记录不保存规划", async () => {
     const f = fixture();
     const root = node(f, "synopsis", "总纲立即生效"),
       volume = node(f, "volume", "卷纲"),
@@ -28,7 +28,7 @@ describe("单一蓝图与职责边界", () => {
     expect(f.repo.getChapter(f.chapter.id)).not.toHaveProperty("plan");
     expect(f.repo.getChapter(f.chapter.id)).not.toHaveProperty("scenes");
   });
-  it("已有蓝图修改要求准确基准，保存会记录可恢复的历史", () => {
+  it("已有额外设定修改要求准确基准，保存会记录可恢复的历史", () => {
     const f = fixture(),
       n = node(f);
     f.api["blueprint:save"]({
@@ -50,7 +50,7 @@ describe("单一蓝图与职责边界", () => {
       n.content,
     );
   });
-  it("同一批 AI 蓝图采用只记录一次可恢复快照", async () => {
+  it("同一批 AI 额外设定采用只记录一次可恢复快照", async () => {
     const f = fixture("explore");
     const n = node(f);
     const set = await proposal(
@@ -76,7 +76,7 @@ describe("单一蓝图与职责边界", () => {
     "foreignChapter",
     "duplicateLink",
     "duplicateSynopsis",
-  ] as const)("拒绝蓝图结构 %s", (problem) => {
+  ] as const)("拒绝额外设定结构 %s", (problem) => {
     const f = fixture();
     const chapter = node(f, "chapter", "", { chapterId: f.chapter.id }),
       nodes = f.repo.getProject(f.project.id).blueprint.nodes;
@@ -110,12 +110,12 @@ describe("单一蓝图与职责边界", () => {
       });
     node(f, "scene", "场景", { parentId: c.id });
     const before = f.repo.getChapter(f.chapter.id);
-    f.api["blueprint:remove"]({ projectId: f.project.id, id: v.id });
+    f.api["outline:remove"]({ projectId: f.project.id, id: v.id });
     expect(f.repo.getProject(f.project.id).blueprint.nodes).toEqual([]);
     expect(f.repo.getChapter(f.chapter.id)).toEqual(before);
-    const versions = f.api["blueprint:history"](f.project.id) as any[];
+    const versions = f.api["outline:history"](f.project.id) as any[];
     f.repo.deleteChapter(f.chapter.id);
-    f.api["blueprint:restore"]({ projectId: f.project.id, id: versions[0].id });
+    f.api["outline:restore"]({ projectId: f.project.id, id: versions[0].id });
     expect(f.repo.getDetail(f.project.id).chapters).toEqual([]);
     expect(
       f.repo.getProject(f.project.id).blueprint.nodes.find((n) => n.id === c.id)
@@ -145,7 +145,7 @@ describe("单一蓝图与职责边界", () => {
       validateRequest(f.repo, request(f, "opening", { chapterId: empty.id })),
     ).not.toThrow();
   });
-  it("蓝图和设定写入端点互相隔离，旧工作流与片段端点已删除", () => {
+  it("额外设定和设定写入端点互相隔离，旧工作流与片段端点已删除", () => {
     const f = fixture();
     expect(() =>
       f.api["project:update"]({ id: f.project.id, blueprint: { nodes: [] } }),

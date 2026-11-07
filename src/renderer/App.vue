@@ -9,6 +9,8 @@ import {
   NButton,
   NPopconfirm,
   darkTheme,
+  zhCN,
+  dateZhCN,
 } from "naive-ui";
 import {
   BookOpen,
@@ -122,7 +124,12 @@ async function create() {
 }
 </script>
 <template>
-  <NConfigProvider :theme="componentTheme" :theme-overrides="theme">
+  <NConfigProvider
+    :theme="componentTheme"
+    :theme-overrides="theme"
+    :locale="zhCN"
+    :date-locale="dateZhCN"
+  >
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
@@ -275,7 +282,7 @@ async function create() {
             "
           >
             <Feather :size="21" /><strong>自由探索</strong
-            ><span>跟随角色，看看接下来会发生什么</span></button
+            ><span>直接写作，每章选择接下来的剧情走向</span></button
           ><button
             :class="{ selected: form.mode === 'novel' }"
             @click="
@@ -284,7 +291,7 @@ async function create() {
             "
           >
             <BookOpen :size="21" /><strong>长篇创作</strong
-            ><span>完善设定与分层大纲，逐章写成小说</span>
+            ><span>用树形大纲规划卷章，按纲推进小说</span>
           </button>
         </div>
         <label class="field-label"
