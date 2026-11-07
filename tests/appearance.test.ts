@@ -115,7 +115,9 @@ describe("帮助检索与导航", () => {
         .flatMap((c) => c.articles)
         .map((a) => a.id),
     ).toContain("faq-models");
-    expect(searchHelp("快速开始")[0].articles.length).toBe(2);
+    expect(searchHelp("快速开始")[0].articles).toEqual(
+      helpCategories.find((category) => category.id === "start")!.articles,
+    );
     expect(searchHelp(" ")).toEqual(helpCategories);
     expect(searchHelp("不存在的帮助词9876")).toEqual([]);
   });

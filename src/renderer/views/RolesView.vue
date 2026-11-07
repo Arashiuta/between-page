@@ -10,6 +10,19 @@ import {
   rolePrompt,
 } from "../../shared/roles";
 import type { RoleId, RoleSettings } from "../../shared/types";
+import { toolGroups } from "../../shared/tools";
+const groups = [
+  ...toolGroups.map((g) => ({
+    name: g.name,
+    roles: roleDefinitions.filter((r) => g.kinds.includes(r.id as never)),
+  })),
+  {
+    name: "资料导入与章节命名",
+    roles: roleDefinitions.filter(
+      (r) => r.id === "material" || r.id === "title",
+    ),
+  },
+];
 const store = useWorkspace(),
   route = useRoute();
 const form = ref<RoleSettings>(JSON.parse(JSON.stringify(store.roles)));
@@ -87,20 +100,23 @@ async function save() {
     </section>
     <div class="roles-layout">
       <nav class="role-list" aria-label="AI 职责列表">
-        <button
-          v-for="item in roleDefinitions"
-          :key="item.id"
-          :class="{ active: selected === item.id }"
-          :disabled="saving"
-          @click="selected = item.id"
-        >
-          <strong>{{ item.name }}</strong
-          ><span>{{ item.description }}</span
-          ><small>{{
-            form.roles.find((role) => role.id === item.id)?.model ||
-            "跟随当前文字模型"
-          }}</small>
-        </button>
+        <template v-for="group in groups" :key="group.name">
+          <h3 class="role-group-heading">{{ group.name }}</h3>
+          <button
+            v-for="item in group.roles"
+            :key="item.id"
+            :class="{ active: selected === item.id }"
+            :disabled="saving"
+            @click="selected = item.id"
+          >
+            <strong>{{ item.name }}</strong
+            ><span>{{ item.description }}</span
+            ><small>{{
+              form.roles.find((role) => role.id === item.id)?.model ||
+              "跟随当前文字模型"
+            }}</small>
+          </button>
+        </template>
       </nav>
       <section class="settings-card role-editor" :key="selected">
         <div class="section-toolbar">

@@ -22,12 +22,18 @@ import type {
   MemoryKind,
   CreativeFreedom,
   StoryDevelopmentDraft,
+  PlanningDraft,
+  PlanningTarget,
+  PlanBlock,
+  TaskRequest,
 } from "../../shared/types";
 import { defaultRoleSettings } from "../../shared/roles";
 import { documentToText } from "../../shared/document";
 import { toolInfo } from "../../shared/tools";
 import { developmentText } from "../../shared/development";
 import { normalizeSoftware } from "../../shared/appearance";
+import { normalizeProject } from "../../shared/blueprint";
+import { normalizeChapterVolume } from "../../shared/planning";
 
 export const useWorkspace = defineStore("workspace", () => {
   const ready = ref(false),
@@ -52,6 +58,15 @@ export const useWorkspace = defineStore("workspace", () => {
     memoryRevisionId = ref(""),
     taskError = ref("");
   const developmentDraft = ref<StoryDevelopmentDraft | null>(null);
+  const planningDraft = ref<PlanningDraft | null>(null);
+  const planningTarget = ref<PlanningTarget | undefined>();
+  const resultType = ref<TaskResult["resultType"] | null>(null);
+  const outputScope = ref<"selection" | "document" | null>(null);
+  const sourceContent = ref("");
+  const writingScope = ref<"selection" | "document">("selection");
+  const outputMode = ref<"rewrite" | "analysis">("rewrite");
+  const usePlanDraft = ref(false),
+    referenceNovelPlan = ref(false);
   const closePrompt = ref(false),
     closingWindow = ref(false);
   const reviewingDevelopment = ref(false);
@@ -67,7 +82,11 @@ export const useWorkspace = defineStore("workspace", () => {
     type: "success" | "error" | "info";
   } | null>(null);
   const chapter = computed(
-    () => detail.value?.chapters.find((c) => c.id === chapterId.value) || null,
+    () =>
+      [
+        ...(detail.value?.chapters ?? []),
+        ...(detail.value?.fragments ?? []),
+      ].find((c) => c.id === chapterId.value) || null,
   );
   const pending = new Map<
     string,
@@ -128,7 +147,8 @@ export const useWorkspace = defineStore("workspace", () => {
     action: string,
     payload: Record<string, unknown>,
   ) {
-    const old = pending.get(key);
+    // Scratch is a complete snapshot: omitted source IDs must not survive merging.
+    const old = action === "scratch:save" ? undefined : pending.get(key);
     pending.set(key, { action, payload: { ...old?.payload, ...payload } });
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
@@ -151,9 +171,10 @@ export const useWorkspace = defineStore("workspace", () => {
               job.payload,
             );
             if (job.action === "chapter:update" && !pending.has(key)) {
-              const chapter = detail.value?.chapters.find(
-                (c) => c.id === job.payload.id,
-              );
+              const chapter = [
+                ...(detail.value?.chapters ?? []),
+                ...(detail.value?.fragments ?? []),
+              ].find((c) => c.id === job.payload.id);
               if (chapter) {
                 chapter.dirty = (result as Chapter).dirty;
                 chapter.updatedAt = (result as Chapter).updatedAt;
@@ -192,11 +213,53 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   function editProject(patch: Partial<Project>) {
     if (!detail.value) return;
-    Object.assign(detail.value.project, patch);
+    Object.assign(
+      detail.value.project,
+      normalizeProject({ ...detail.value.project, ...patch }),
+    );
+    if (patch.mode)
+      detail.value.chapters = detail.value.chapters.map((chapter) =>
+        normalizeChapterVolume(chapter, detail.value!.project),
+      );
     enqueue("project:" + detail.value.project.id, "project:update", {
       ...patch,
       id: detail.value.project.id,
     });
+  }
+  function editPlanning(
+    target: PlanningTarget,
+    content: string,
+    title?: string,
+  ) {
+    if (!detail.value) return;
+    const plan = detail.value.project.novelPlan;
+    let block: PlanBlock | undefined;
+    if (target.level === "synopsis") block = plan?.synopsis;
+    if (target.level === "volume") {
+      const volume = plan?.volumes.find((v) => v.id === target.id);
+      block = volume?.plan;
+      if (volume && title) volume.title = title;
+    }
+    const c = detail.value.chapters.find(
+      (c) =>
+        c.id === (target.level === "chapter" ? target.id : target.parentId),
+    );
+    if (target.level === "chapter" && c) {
+      c.planMeta ??= { confirmed: c.plan };
+      c.plan = content;
+      if (title) c.title = title;
+    }
+    if (target.level === "scene") {
+      const scene = c?.scenes?.find((s) => s.id === target.id);
+      block = scene?.plan;
+      if (scene && title) scene.title = title;
+    }
+    if (block) block.content = content;
+    enqueue(
+      `planning:${detail.value.project.id}:${target.level}:${target.id ?? "synopsis"}`,
+      "planning:save",
+      { projectId: detail.value.project.id, target, content, title },
+    );
   }
   function editSettings(value: SettingsInput) {
     if (!settings.value) return;
@@ -254,9 +317,12 @@ export const useWorkspace = defineStore("workspace", () => {
     title?: string;
     plan?: string;
     document?: DocumentNode;
+    fragmentContext?: Chapter["fragmentContext"];
   }) {
     const current = chapter.value;
     if (!current) return;
+    if (patch.plan !== undefined)
+      current.planMeta ??= { confirmed: current.plan };
     Object.assign(current, patch);
     if (patch.document) current.content = documentToText(patch.document);
     current.dirty = true;
@@ -285,6 +351,15 @@ export const useWorkspace = defineStore("workspace", () => {
       chapterId: outputChapterId.value,
       memoryRecords: memoryRecords.value,
       developmentDraft: developmentDraft.value,
+      planningDraft: planningDraft.value,
+      resultType: resultType.value,
+      outputScope: outputScope.value,
+      sourceContent: sourceContent.value,
+      planningTarget: planningTarget.value,
+      writingScope: writingScope.value,
+      outputMode: outputMode.value,
+      usePlanDraft: usePlanDraft.value,
+      referenceNovelPlan: referenceNovelPlan.value,
       selectedTool: taskKind.value,
       developmentUndoId: developmentUndoId.value,
       ...(memoryRevisionId.value
@@ -306,6 +381,15 @@ export const useWorkspace = defineStore("workspace", () => {
       memoryRecords?: { kind: MemoryKind; content: string }[] | null;
       memoryRevisionId?: string;
       developmentDraft?: StoryDevelopmentDraft | null;
+      planningDraft?: PlanningDraft | null;
+      resultType?: TaskResult["resultType"] | null;
+      outputScope?: "selection" | "document" | null;
+      sourceContent?: string;
+      planningTarget?: PlanningTarget;
+      writingScope?: "selection" | "document";
+      outputMode?: "rewrite" | "analysis";
+      usePlanDraft?: boolean;
+      referenceNovelPlan?: boolean;
       selectedTool?: TaskKind;
       developmentUndoId?: string;
       outputSelection?: { text: string; from: number; to: number } | null;
@@ -317,6 +401,15 @@ export const useWorkspace = defineStore("workspace", () => {
     memoryRecords.value = saved?.memoryRecords ?? null;
     memoryRevisionId.value = saved?.memoryRevisionId || "";
     developmentDraft.value = saved?.developmentDraft ?? null;
+    planningDraft.value = saved?.planningDraft ?? null;
+    resultType.value = saved?.resultType ?? null;
+    outputScope.value = saved?.outputScope ?? null;
+    sourceContent.value = saved?.sourceContent ?? "";
+    planningTarget.value = saved?.planningTarget;
+    writingScope.value = saved?.writingScope ?? "selection";
+    outputMode.value = saved?.outputMode ?? "rewrite";
+    usePlanDraft.value = saved?.usePlanDraft ?? false;
+    referenceNovelPlan.value = saved?.referenceNovelPlan ?? false;
     taskKind.value =
       saved?.selectedTool ||
       (detail.value.chapters.some((item) => item.content.trim())
@@ -351,33 +444,81 @@ export const useWorkspace = defineStore("workspace", () => {
     chapterId.value = created.id;
     selection.value = null;
   }
+  async function newFragment() {
+    if (!detail.value) return;
+    const projectId = detail.value.project.id;
+    await flush();
+    if (detail.value?.project.id !== projectId) return;
+    const created = await api<Chapter>("fragment:create", projectId);
+    if (detail.value?.project.id !== projectId) return;
+    (detail.value.fragments ??= []).push(created);
+    chapterId.value = created.id;
+    selection.value = null;
+    taskKind.value = "opening";
+  }
   async function deleteChapter(id: string) {
-    const target = detail.value?.chapters.find((item) => item.id === id);
+    const target = [
+      ...(detail.value?.chapters ?? []),
+      ...(detail.value?.fragments ?? []),
+    ].find((item) => item.id === id);
     if (!target) return;
     if (busy.value || imageBusy.value)
       throw new Error("请先停止或等待当前生成任务完成，再删除章节。");
     await flush();
     if (busy.value || imageBusy.value)
       throw new Error("请先停止或等待当前生成任务完成，再删除章节。");
-    const index =
-      detail.value?.chapters.findIndex((item) => item.id === id) ?? 0;
-    const updated = await api<ProjectDetail>("chapter:delete", id);
+    const index = Math.max(
+      0,
+      detail.value?.chapters.findIndex((item) => item.id === id) ?? 0,
+    );
+    const updated = await api<ProjectDetail>("chapter:delete", {
+      id,
+      projectId: target.projectId,
+    });
     if (detail.value?.project.id !== target.projectId) return;
     detail.value = updated;
-    if (!updated.chapters.some((item) => item.id === chapterId.value)) {
+    pending.delete("chapter:" + id);
+    if (
+      ![...updated.chapters, ...(updated.fragments ?? [])].some(
+        (item) => item.id === chapterId.value,
+      )
+    ) {
       chapterId.value =
         updated.chapters[Math.min(index, updated.chapters.length - 1)]?.id ||
+        updated.fragments?.[0]?.id ||
         "";
       selection.value = null;
+    }
+    if (
+      planningTarget.value?.id === id ||
+      planningTarget.value?.parentId === id
+    )
+      planningTarget.value = undefined;
+    if (
+      planningDraft.value?.target.id === id ||
+      planningDraft.value?.target.parentId === id
+    ) {
+      planningDraft.value = null;
+      if (resultType.value === "planning") output.value = "";
+    }
+    if (developmentDraft.value) {
+      const candidate = updated.project.blueprintCandidates.find(
+        (c) => c.development?.id === developmentDraft.value?.id,
+      );
+      developmentDraft.value = candidate?.development ?? null;
     }
     if (outputChapterId.value === id) {
       output.value = "";
       outputChapterId.value = "";
       outputSelection.value = null;
+      outputScope.value = null;
+      sourceContent.value = "";
+      resultType.value = null;
       memoryRecords.value = null;
       memoryRevisionId.value = "";
       taskError.value = "";
     }
+    scratch();
     images.value = images.value.map((image) =>
       image.chapterId === id
         ? { ...image, chapterId: null, revisionId: null }
@@ -388,6 +529,34 @@ export const useWorkspace = defineStore("workspace", () => {
     );
     if (project) Object.assign(project, updated.project);
     notify(`已删除「${target.title}」。`);
+  }
+  async function removePlanning(target: PlanningTarget) {
+    const projectId = detail.value?.project.id;
+    if (!projectId) return;
+    if (busy.value || imageBusy.value)
+      throw new Error("请先停止或等待当前生成任务完成，再清空或删除规划。");
+    await flush();
+    if (detail.value?.project.id !== projectId) return;
+    const updated = await api<ProjectDetail>("planning:remove", {
+      projectId,
+      target,
+    });
+    if (detail.value?.project.id !== projectId) return;
+    detail.value = updated;
+    const removedTarget = (value?: PlanningTarget) =>
+      !!value &&
+      ["volume", "scene"].includes(target.level) &&
+      ((value.level === target.level && value.id === target.id) ||
+        (target.level === "volume" && value.parentId === target.id));
+    if (removedTarget(planningTarget.value)) planningTarget.value = undefined;
+    if (removedTarget(planningDraft.value?.target)) {
+      planningDraft.value = null;
+      if (resultType.value === "planning") {
+        output.value = "";
+        resultType.value = null;
+      }
+    }
+    scratch();
   }
   async function adopt() {
     if (!chapter.value) return;
@@ -403,6 +572,10 @@ export const useWorkspace = defineStore("workspace", () => {
       workflowContext?: string;
       chapterId?: string;
       newChapter?: boolean;
+      planningTarget?: PlanningTarget;
+      writingScope?: TaskRequest["writingScope"];
+      outputMode?: TaskRequest["outputMode"];
+      usePlanDraft?: boolean;
     } = {},
   ) {
     if (!detail.value || busy.value || closingWindow.value) return;
@@ -424,10 +597,13 @@ export const useWorkspace = defineStore("workspace", () => {
         await newChapter();
       await flush();
       if (stopRequested || detail.value?.project.id !== projectId) return;
+      if (options.planningTarget) planningTarget.value = options.planningTarget;
       output.value = "";
       memoryRecords.value = null;
       memoryRevisionId.value = "";
       developmentDraft.value = null;
+      planningDraft.value = null;
+      resultType.value = null;
       outputKind.value = kind;
       taskKind.value = kind;
       const targetChapterId = options.chapterId || chapter.value?.id || "";
@@ -437,6 +613,16 @@ export const useWorkspace = defineStore("workspace", () => {
           ? { ...selection.value }
           : null;
       const selected = outputSelection.value?.text;
+      const polish = ["revise", "scene", "dialogue"].includes(kind);
+      outputScope.value = polish
+        ? selected?.trim()
+          ? "selection"
+          : (options.writingScope ?? writingScope.value)
+        : null;
+      sourceContent.value =
+        [...detail.value.chapters, ...(detail.value.fragments ?? [])].find(
+          (c) => c.id === targetChapterId,
+        )?.content ?? "";
       scratch();
       const result = await api<TaskResult>("ai:run", {
         requestId: requestId.value,
@@ -446,6 +632,21 @@ export const useWorkspace = defineStore("workspace", () => {
         instruction: options.instruction ?? instruction.value,
         selection: selected,
         workflowContext: options.workflowContext,
+        planningTarget: ["outline", "adjust"].includes(kind)
+          ? (options.planningTarget ??
+            planningTarget.value ??
+            (detail.value.project.mode === "novel"
+              ? chapter.value?.kind !== "fragment" && chapter.value
+                ? { level: "chapter", id: chapter.value.id }
+                : { level: "synopsis" }
+              : undefined))
+          : undefined,
+        writingScope: polish ? (outputScope.value ?? undefined) : undefined,
+        outputMode: polish
+          ? (options.outputMode ?? outputMode.value)
+          : undefined,
+        usePlanDraft: options.usePlanDraft ?? usePlanDraft.value,
+        referenceNovelPlan: referenceNovelPlan.value,
       });
       if (detail.value?.project.id !== projectId) return;
       requestId.value = "";
@@ -453,7 +654,13 @@ export const useWorkspace = defineStore("workspace", () => {
       memoryRecords.value = result.memoryRecords ?? null;
       memoryRevisionId.value = result.memoryRevisionId ?? "";
       developmentDraft.value = result.developmentDraft ?? null;
-      if (toolInfo[kind].candidate && result.text.trim()) {
+      planningDraft.value = result.planningDraft ?? null;
+      resultType.value = result.resultType ?? (polish ? "rewrite" : null);
+      if (
+        !result.planningDraft &&
+        toolInfo[kind].candidate &&
+        result.text.trim()
+      ) {
         const labels: Partial<Record<TaskKind, string>> = {
           outline: "故事蓝图候选",
           adjust: "走向调整候选",
@@ -667,6 +874,15 @@ export const useWorkspace = defineStore("workspace", () => {
     memoryRecords,
     memoryRevisionId,
     developmentDraft,
+    planningDraft,
+    planningTarget,
+    resultType,
+    writingScope,
+    outputScope,
+    outputMode,
+    sourceContent,
+    usePlanDraft,
+    referenceNovelPlan,
     reviewingDevelopment,
     developmentUndoId,
     outputSelection,
@@ -679,6 +895,7 @@ export const useWorkspace = defineStore("workspace", () => {
     bootstrap,
     flush,
     editProject,
+    editPlanning,
     editSettings,
     editSoftwareSettings,
     closePrompt,
@@ -691,7 +908,9 @@ export const useWorkspace = defineStore("workspace", () => {
     refreshProject,
     switchChapter,
     newChapter,
+    newFragment,
     deleteChapter,
+    removePlanning,
     adopt,
     runTask,
     stopTask,

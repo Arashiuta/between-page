@@ -82,6 +82,29 @@ export async function removeAsset(dataDir: string, filename: string) {
   await rm(await assetPath(dataDir, filename), { force: true });
 }
 
+// Keep failed file cleanup durable; deleting a record never leaves a live broken link.
+export async function cleanupDeletedAssets(
+  repo: StoryRepository,
+  dataDir: string,
+) {
+  const pending = repo.getSetting<string[]>("assets.pendingDeletes", []);
+  for (const filename of pending) {
+    try {
+      if (!repo.listImages().some((i) => i.filename === filename))
+        await removeAsset(dataDir, filename);
+      repo.setSetting(
+        "assets.pendingDeletes",
+        repo
+          .getSetting<string[]>("assets.pendingDeletes", [])
+          .filter((f) => f !== filename),
+      );
+    } catch {
+      // Retry on the next deletion or application start, including after a crash.
+    }
+  }
+  return repo.getSetting<string[]>("assets.pendingDeletes", []).length;
+}
+
 export async function writeAsset(
   dataDir: string,
   filename: string,

@@ -11,6 +11,7 @@ import {
   Trash2,
 } from "lucide-vue-next";
 import CardEditor from "../components/CardEditor.vue";
+import ItemActions from "../components/ItemActions.vue";
 import { useWorkspace } from "../stores/workspace";
 import type { Card, CardKind } from "../../shared/types";
 const store = useWorkspace(),
@@ -147,6 +148,12 @@ watch(filter, () => {
                 ? card.referenceIds.length + " 张参考图"
                 : "独立资料 · 可用于多个故事"
             }}</span>
+            <ItemActions
+              :label="card.name"
+              :disabled="deleting"
+              @edit="open(card)"
+              @action="requestDelete(card)"
+            />
             <button
               class="text-button asset-card-delete"
               :aria-label="`删除创作资料「${card.name}」`"

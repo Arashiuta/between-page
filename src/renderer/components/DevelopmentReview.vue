@@ -7,6 +7,7 @@ import {
   NDrawerContent,
   NInput,
   NSelect,
+  NPopconfirm,
 } from "naive-ui";
 import { useWorkspace } from "../stores/workspace";
 import { developmentLabel } from "../../shared/development";
@@ -134,6 +135,26 @@ async function apply() {
                   ? "正文提炼"
                   : "新增构想"
             }}</span>
+            <NPopconfirm
+              v-if="!draft.appliedIds.includes(change.id)"
+              positive-text="移除建议"
+              negative-text="取消"
+              @positive-click="
+                () => {
+                  if (!draft) return;
+                  draft.changes = draft.changes.filter(
+                    (c) => c.id !== change.id,
+                  );
+                  selectedIds = selectedIds.filter((id) => id !== change.id);
+                  persist();
+                }
+              "
+              ><template #trigger
+                ><NButton size="small" :disabled="applying || store.busy"
+                  >移除此项</NButton
+                ></template
+              >移除此项未采用建议？已有设定保留。</NPopconfirm
+            >
           </div>
           <template
             v-if="

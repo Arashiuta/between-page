@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { documentToText, textToDocument } from "../shared/document";
+import { normalizeChapterVolume } from "../shared/planning";
 import {
   normalizeCard,
   materialLength,
@@ -24,9 +25,21 @@ import type {
   WorkflowRun,
   WorkflowTemplate,
 } from "../shared/types";
-import { normalizeProject, defaultBlueprintSections } from "../shared/blueprint";
+import {
+  normalizeProject,
+  defaultBlueprintSections,
+} from "../shared/blueprint";
 
 const now = () => new Date().toISOString();
+function references(value: unknown, id: string): boolean {
+  if (value === id) return true;
+  if (Array.isArray(value)) return value.some((v) => references(v, id));
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Object.values(value).some((v) => references(v, id))
+  );
+}
 class SQLiteConnection {
   readonly raw: DatabaseSync;
   private depth = 0;
@@ -101,7 +114,9 @@ export class StoryRepository {
     const projects = this.db
       .prepare("SELECT id, payload FROM projects")
       .all() as { id: string; payload: string }[];
-    const migrate = this.db.prepare("UPDATE projects SET payload = ? WHERE id = ?");
+    const migrate = this.db.prepare(
+      "UPDATE projects SET payload = ? WHERE id = ?",
+    );
     for (const row of projects) {
       const value = JSON.parse(row.payload) as Project;
       if (!Array.isArray(value.blueprintSections) || value.outline?.trim())
@@ -120,7 +135,7 @@ export class StoryRepository {
     if (!row) throw new Error("这条记录已不存在，请刷新后重试。");
     return JSON.parse(row.payload) as T;
   }
-  private write(table: string, value: { id: string }) {
+  private write<T extends { id: string }>(table: string, value: T) {
     this.db
       .prepare(`UPDATE ${table} SET payload = ? WHERE id = ?`)
       .run(JSON.stringify(value), value.id);
@@ -144,7 +159,8 @@ export class StoryRepository {
     return normalizeProject(this.one<Project>("projects", id));
   }
   getChapter(id: string) {
-    return this.one<Chapter>("chapters", id);
+    const chapter = this.one<Chapter>("chapters", id);
+    return normalizeChapterVolume(chapter, this.getProject(chapter.projectId));
   }
   getRevision(id: string) {
     return this.one<Revision>("revisions", id);
@@ -156,12 +172,17 @@ export class StoryRepository {
     return this.one<ImageAsset>("images", id);
   }
   getDetail(id: string): ProjectDetail {
+    const project = this.getProject(id);
+    const units = this.all<Chapter>(
+      "SELECT payload FROM chapters WHERE project_id = ? ORDER BY position",
+      id,
+    );
     return {
-      project: this.getProject(id),
-      chapters: this.all<Chapter>(
-        "SELECT payload FROM chapters WHERE project_id = ? ORDER BY position",
-        id,
-      ),
+      project,
+      chapters: units
+        .filter((c) => c.kind !== "fragment")
+        .map((c) => normalizeChapterVolume(c, project)),
+      fragments: units.filter((c) => c.kind === "fragment"),
       cards: this.all<Card>(
         "SELECT payload FROM cards WHERE project_id = ?",
         id,
@@ -193,7 +214,9 @@ export class StoryRepository {
         title: input.title,
         premise: input.premise,
         mode: input.mode,
-        creativeFreedom: input.creativeFreedom ?? (input.mode === "explore" ? "free" : "balanced"),
+        creativeFreedom:
+          input.creativeFreedom ??
+          (input.mode === "explore" ? "free" : "guided"),
         genre: input.genre || "未分类",
         world: "",
         style: "",
@@ -217,7 +240,7 @@ export class StoryRepository {
         this.saveCard({ ...source, id: undefined, projectId: project.id });
       }
       this.createChapter(project.id);
-      return project;
+      return this.getProject(project.id);
     })();
   }
   updateProject(
@@ -237,10 +260,15 @@ export class StoryRepository {
         | "blueprintCandidates"
         | "archived"
         | "cover"
+        | "novelPlan"
       >
     >,
   ) {
-    const project = normalizeProject({ ...this.getProject(id), ...patch, updatedAt: now() });
+    const project = normalizeProject({
+      ...this.getProject(id),
+      ...patch,
+      updatedAt: now(),
+    });
     this.write("projects", project);
     return project;
   }
@@ -272,7 +300,9 @@ export class StoryRepository {
             revisionId: null,
           };
           this.db
-            .prepare("UPDATE images SET project_id = NULL, payload = ? WHERE id = ?")
+            .prepare(
+              "UPDATE images SET project_id = NULL, payload = ? WHERE id = ?",
+            )
             .run(JSON.stringify(preserved), image.id);
         } else {
           removeFiles.push(image.filename);
@@ -284,13 +314,24 @@ export class StoryRepository {
       this.db.prepare("DELETE FROM chapters WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM cards WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
-      this.db.prepare("DELETE FROM settings WHERE key = ?").run("scratch." + id);
+      this.db
+        .prepare("DELETE FROM settings WHERE key = ?")
+        .run("scratch." + id);
+      this.db
+        .prepare("DELETE FROM settings WHERE key = ?")
+        .run("planning.history." + id);
       this.db
         .prepare("DELETE FROM settings WHERE key LIKE ?")
         .run("workflow.run." + id + ".%");
-      this.db.prepare("DELETE FROM settings WHERE key = ? OR key LIKE ?").run(`development.undo.${id}`, `development.applied.${id}.%`);
-      const stillUsed = new Set(this.listImages().map((image) => image.filename));
-      return [...new Set(removeFiles)].filter((filename) => !stillUsed.has(filename));
+      this.db
+        .prepare("DELETE FROM settings WHERE key = ? OR key LIKE ?")
+        .run(`development.undo.${id}`, `development.applied.${id}.%`);
+      const stillUsed = new Set(
+        this.listImages().map((image) => image.filename),
+      );
+      return [...new Set(removeFiles)].filter(
+        (filename) => !stillUsed.has(filename),
+      );
     })();
   }
   listWorkflowTemplates(): WorkflowTemplate[] {
@@ -316,7 +357,7 @@ export class StoryRepository {
     this.updateProject(projectId, {});
   }
   createChapter(projectId: string): Chapter {
-    this.getProject(projectId);
+    const project = this.getProject(projectId);
     const row = this.db
       .prepare(
         "SELECT MAX(position) AS position FROM chapters WHERE project_id = ?",
@@ -329,6 +370,12 @@ export class StoryRepository {
       title: `第${position}章`,
       position,
       plan: "",
+      kind: "chapter",
+      volumeId:
+        project.mode === "novel"
+          ? project.novelPlan?.volumes[0]?.id
+          : undefined,
+      planMeta: {},
       document: textToDocument(""),
       content: "",
       acceptedRevisionId: null,
@@ -346,22 +393,44 @@ export class StoryRepository {
     return this.db.transaction(() => {
       const chapter = this.getChapter(id);
       const detail = this.getDetail(chapter.projectId);
-      const revisionIds = new Set(this.listRevisions(id).map((revision) => revision.id));
+      const revisionIds = new Set(
+        this.listRevisions(id).map((revision) => revision.id),
+      );
       const laterIds = new Set(
-        detail.chapters.filter((item) => item.position > chapter.position).map((item) => item.id),
+        detail.chapters
+          .filter(
+            (item) =>
+              chapter.kind !== "fragment" && item.position > chapter.position,
+          )
+          .map((item) => item.id),
       );
 
       // Keep illustrations in the story, without references to deleted sources.
       for (const image of this.listImages()) {
-        if (image.chapterId === id || (image.revisionId && revisionIds.has(image.revisionId))) {
-          const preserved: ImageAsset = { ...image, chapterId: null, revisionId: null };
+        if (
+          image.chapterId === id ||
+          (image.revisionId && revisionIds.has(image.revisionId))
+        ) {
+          const preserved: ImageAsset = {
+            ...image,
+            chapterId: null,
+            revisionId: null,
+          };
           this.write("images", preserved);
         }
       }
       for (const memory of detail.memories) {
-        if (memory.chapterId === id || (memory.revisionId && revisionIds.has(memory.revisionId))) {
+        if (
+          memory.chapterId === id ||
+          (memory.revisionId && revisionIds.has(memory.revisionId))
+        ) {
           this.db.prepare("DELETE FROM memories WHERE id = ?").run(memory.id);
-        } else if (chapter.acceptedRevisionId && !memory.manual && memory.chapterId && laterIds.has(memory.chapterId)) {
+        } else if (
+          chapter.acceptedRevisionId &&
+          !memory.manual &&
+          memory.chapterId &&
+          laterIds.has(memory.chapterId)
+        ) {
           this.setMemoryActive(memory.id, false);
         }
       }
@@ -373,17 +442,63 @@ export class StoryRepository {
         const updated = {
           ...item,
           position: index + 1,
-          needsReview: item.needsReview || !!(chapter.acceptedRevisionId && laterIds.has(item.id) && item.acceptedRevisionId),
+          needsReview:
+            item.needsReview ||
+            !!(
+              chapter.acceptedRevisionId &&
+              laterIds.has(item.id) &&
+              item.acceptedRevisionId
+            ),
         };
-        this.db.prepare("UPDATE chapters SET position = ?, payload = ? WHERE id = ?")
+        if (updated.fragmentContext?.anchorId === id)
+          delete updated.fragmentContext.anchorId;
+        updated.incorporatedInto = updated.incorporatedInto?.filter(
+          (target) => target !== id,
+        );
+        this.db
+          .prepare("UPDATE chapters SET position = ?, payload = ? WHERE id = ?")
           .run(updated.position, JSON.stringify(updated), updated.id);
       }
+      for (const fragment of (detail.fragments ?? []).filter(
+        (f) => f.id !== id,
+      )) {
+        if (fragment.fragmentContext?.anchorId === id)
+          delete fragment.fragmentContext.anchorId;
+        fragment.incorporatedInto = fragment.incorporatedInto?.filter(
+          (target) => target !== id,
+        );
+        this.write("chapters", fragment);
+      }
+      const invalidSource = (value: unknown) =>
+        [...revisionIds].some((r) => references(value, r));
+      this.updateProject(chapter.projectId, {
+        blueprintCandidates: detail.project.blueprintCandidates.map(
+          (candidate) =>
+            candidate.development && invalidSource(candidate.development)
+              ? {
+                  ...candidate,
+                  development: {
+                    ...candidate.development,
+                    warnings: [
+                      ...candidate.development.warnings,
+                      "来源章节已删除，此候选的正文依据已失效，请重新生成后采用。",
+                    ],
+                  },
+                }
+              : candidate,
+        ),
+      });
+      const undoKey = `development.undo.${chapter.projectId}`;
+      if (invalidSource(this.getSetting(undoKey, null)))
+        this.setSetting(undoKey, null);
       const scratchKey = "scratch." + chapter.projectId;
-      if (this.getSetting<{ chapterId?: string } | null>(scratchKey, null)?.chapterId === id)
+      const scratch = this.getSetting(scratchKey, null);
+      if (references(scratch, id) || invalidSource(scratch))
         this.db.prepare("DELETE FROM settings WHERE key = ?").run(scratchKey);
       for (const run of this.listWorkflowRuns(chapter.projectId)) {
-        if (run.chapterId === id)
-          this.db.prepare("DELETE FROM settings WHERE key = ?")
+        if (run.chapterId === id || invalidSource(run))
+          this.db
+            .prepare("DELETE FROM settings WHERE key = ?")
             .run(`workflow.run.${run.projectId}.${run.id}`);
       }
       this.touch(chapter.projectId);
@@ -392,10 +507,17 @@ export class StoryRepository {
   }
   updateChapter(
     id: string,
-    patch: { title?: string; plan?: string; document?: DocumentNode },
+    patch: {
+      title?: string;
+      plan?: string;
+      document?: DocumentNode;
+      fragmentContext?: Chapter["fragmentContext"];
+    },
   ): Chapter {
     const previous = this.getChapter(id);
     const chapter = { ...previous, ...patch, updatedAt: now() };
+    if (patch.plan !== undefined && !chapter.planMeta)
+      chapter.planMeta = { confirmed: previous.plan };
     if (patch.document) chapter.content = documentToText(patch.document);
     const accepted = chapter.acceptedRevisionId
       ? this.getRevision(chapter.acceptedRevisionId)
@@ -431,6 +553,57 @@ export class StoryRepository {
       chapterId,
     );
   }
+  revisionUsage(projectId: string, id: string): string[] {
+    const revision = this.getRevision(id);
+    if (revision.projectId !== projectId)
+      throw new Error("版本不属于当前故事。");
+    const usage: string[] = [];
+    for (const c of this.all<Chapter>("SELECT payload FROM chapters"))
+      if (c.acceptedRevisionId === id) usage.push(`当前采用：${c.title}`);
+    for (const m of this.all<Memory>("SELECT payload FROM memories"))
+      if (m.revisionId === id)
+        usage.push(
+          `故事记忆${m.active ? "" : "（已停用）"}：${m.content.slice(0, 40)}`,
+        );
+    for (const image of this.listImages())
+      if (image.revisionId === id) usage.push(`插画来源：${image.name}`);
+    for (const p of this.listProjects())
+      for (const candidate of p.blueprintCandidates)
+        if (references(candidate.development, id))
+          usage.push(`设定候选：${p.title} / ${candidate.title}`);
+    for (const row of this.db
+      .prepare("SELECT key, value FROM settings")
+      .all() as { key: string; value: string }[])
+      if (references(JSON.parse(row.value), id))
+        usage.push(
+          row.key.startsWith("scratch.")
+            ? "AI 暂存草稿"
+            : row.key.startsWith("workflow.run.")
+              ? "工作流记录"
+              : row.key.startsWith("development.undo.")
+                ? "设定更新撤销记录"
+                : "保存的来源记录",
+        );
+    return [...new Set(usage)];
+  }
+  manageRevision(projectId: string, id: string, label?: string) {
+    return this.db.transaction(() => {
+      const revision = this.getRevision(id);
+      if (revision.projectId !== projectId)
+        throw new Error("版本不属于当前故事。");
+      if (label !== undefined) {
+        if (!label.trim() || label.length > 500)
+          throw new Error("版本标签需为 1—500 字。");
+        this.write("revisions", { ...revision, label: label.trim() });
+      } else {
+        const usage = this.revisionUsage(projectId, id);
+        if (usage.length)
+          throw new Error(`此版本仍被引用，无法删除：${usage.join("；")}`);
+        this.db.prepare("DELETE FROM revisions WHERE id = ?").run(id);
+      }
+      return this.listRevisions(revision.chapterId);
+    })();
+  }
   restoreRevision(revisionId: string): Chapter {
     return this.db.transaction(() => {
       const revision = this.getRevision(revisionId);
@@ -444,6 +617,8 @@ export class StoryRepository {
   adoptChapter(id: string): Chapter {
     return this.db.transaction(() => {
       const chapter = this.getChapter(id);
+      if (chapter.kind === "fragment")
+        throw new Error("请先将片段编入章节，再采用并整理正式记忆。");
       if (!chapter.content.trim())
         throw new Error("先写下一些正文，再采用这一章。");
       if (!chapter.dirty && !chapter.needsReview) return chapter;
@@ -587,6 +762,84 @@ export class StoryRepository {
           createdAt: now(),
         });
       return records.length;
+    })();
+  }
+  updateMemory(
+    projectId: string,
+    id: string,
+    patch: { kind: MemoryKind; content: string },
+  ) {
+    return this.db.transaction(() => {
+      const memory = this.one<Memory>("memories", id);
+      if (memory.projectId !== projectId)
+        throw new Error("记忆不属于当前故事。");
+      if (!patch.content.trim() || patch.content.length > 200_000)
+        throw new Error("请填写有效的记忆内容。");
+      const updated = {
+        ...memory,
+        kind: patch.kind,
+        content: patch.content.trim(),
+      };
+      this.write("memories", updated);
+      this.touch(projectId);
+      return updated;
+    })();
+  }
+  deleteMemory(projectId: string, id: string) {
+    return this.db.transaction(() => {
+      const memory = this.one<Memory>("memories", id);
+      if (memory.projectId !== projectId)
+        throw new Error("记忆不属于当前故事。");
+      this.db.prepare("DELETE FROM memories WHERE id = ?").run(id);
+      this.touch(projectId);
+      return this.getDetail(projectId);
+    })();
+  }
+  imageUsage(id: string): string[] {
+    this.getImage(id);
+    const usage: string[] = [];
+    for (const project of this.listProjects())
+      if (project.cover?.imageId === id)
+        usage.push(`作品封面：${project.title}`);
+    for (const card of this.all<Card>("SELECT payload FROM cards"))
+      if (card.referenceIds.includes(id))
+        usage.push(
+          `资料卡：${card.projectId ? this.getProject(card.projectId).title : "创作资料库"} / ${card.name}`,
+        );
+    for (const image of this.listImages())
+      if (image.referenceIds.includes(id))
+        usage.push(`图片参考来源：${image.name}`);
+    for (const row of this.db
+      .prepare(
+        "SELECT key, value FROM settings WHERE key LIKE 'development.undo.%'",
+      )
+      .all() as { key: string; value: string }[])
+      if (references(JSON.parse(row.value), id))
+        usage.push("设定更新撤销记录中的图片关联");
+    return usage;
+  }
+  updateImage(id: string, name: string, notes: string) {
+    if (!name.trim() || name.length > 500 || notes.length > 20_000)
+      throw new Error("图片名称或备注无效。");
+    const image = { ...this.getImage(id), name: name.trim(), notes };
+    this.write("images", image);
+    return image;
+  }
+  deleteImage(id: string) {
+    return this.db.transaction(() => {
+      const image = this.getImage(id),
+        usage = this.imageUsage(id);
+      if (usage.length)
+        throw new Error(`图片仍被引用，请先解除关联：${usage.join("；")}`);
+      this.db.prepare("DELETE FROM images WHERE id = ?").run(id);
+      if (!this.listImages().some((i) => i.filename === image.filename))
+        this.setSetting("assets.pendingDeletes", [
+          ...new Set([
+            ...this.getSetting<string[]>("assets.pendingDeletes", []),
+            image.filename,
+          ]),
+        ]);
+      return image;
     })();
   }
   addImage(image: ImageAsset) {

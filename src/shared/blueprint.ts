@@ -1,4 +1,5 @@
 import type { BlueprintCandidate, BlueprintSection, Project } from "./types";
+import { emptyNovelPlan } from "./planning";
 
 export const blueprintDefaults: Pick<BlueprintSection, "id" | "title">[] = [
   { id: "core-conflict", title: "核心冲突" },
@@ -13,6 +14,7 @@ export function defaultBlueprintSections(): BlueprintSection[] {
 }
 
 export function normalizeProject(project: Project): Project {
+  const novelPlan = project.novelPlan ?? emptyNovelPlan();
   const sections = Array.isArray(project.blueprintSections)
     ? project.blueprintSections.map((section) => ({ ...section }))
     : defaultBlueprintSections();
@@ -21,14 +23,29 @@ export function normalizeProject(project: Project): Project {
     const existing = sections.find((section) => section.title === "整体蓝图");
     if (existing) {
       if (existing.content !== legacy && !existing.content.includes(legacy))
-        existing.content = [existing.content.trim(), legacy].filter(Boolean).join("\n\n");
+        existing.content = [existing.content.trim(), legacy]
+          .filter(Boolean)
+          .join("\n\n");
     } else {
-      sections.unshift({ id: "legacy-outline", title: "整体蓝图", content: legacy });
+      sections.unshift({
+        id: "legacy-outline",
+        title: "整体蓝图",
+        content: legacy,
+      });
     }
   }
   return {
     ...project,
     cover: project.cover ?? null,
+    novelPlan:
+      project.mode === "novel" && !novelPlan.volumes.length
+        ? {
+            ...novelPlan,
+            volumes: [
+              { id: project.id, title: "第一卷", plan: { content: "" } },
+            ],
+          }
+        : novelPlan,
     creativeFreedom: project.creativeFreedom ?? "balanced",
     outline: "",
     blueprintSections: sections,
@@ -41,7 +58,12 @@ export function appendCandidate(
   candidate: BlueprintCandidate,
   sectionId: string,
 ): BlueprintSection[] {
-  return applyBlueprintContent(sections, sectionId, candidate.content, "append");
+  return applyBlueprintContent(
+    sections,
+    sectionId,
+    candidate.content,
+    "append",
+  );
 }
 
 export function applyBlueprintContent(
@@ -54,9 +76,12 @@ export function applyBlueprintContent(
     section.id === sectionId
       ? {
           ...section,
-          content: mode === "replace"
-            ? content
-            : [section.content.trim(), content.trim()].filter(Boolean).join("\n\n"),
+          content:
+            mode === "replace"
+              ? content
+              : [section.content.trim(), content.trim()]
+                  .filter(Boolean)
+                  .join("\n\n"),
         }
       : section,
   );

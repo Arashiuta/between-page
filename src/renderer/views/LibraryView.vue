@@ -10,13 +10,37 @@ import {
   Archive,
   Trash2,
 } from "lucide-vue-next";
-import { NPopconfirm } from "naive-ui";
+import { NPopconfirm, NModal, NInput, NButton } from "naive-ui";
 import { useWorkspace } from "../stores/workspace";
 import { textToDocument } from "../../shared/document";
 import StoryCover from "../components/StoryCover.vue";
 import CoverEditor from "../components/CoverEditor.vue";
+import ItemActions from "../components/ItemActions.vue";
 import type { Project } from "../../shared/types";
 const editingCover = ref<Project>();
+const editingProject = ref<Project>();
+const projectForm = ref({ title: "", premise: "", genre: "" });
+function editProject(project: Project) {
+  editingProject.value = project;
+  projectForm.value = {
+    title: project.title,
+    premise: project.premise,
+    genre: project.genre,
+  };
+}
+async function saveProject() {
+  if (!editingProject.value) return;
+  await store.flush();
+  const updated = await store.api<Project>("project:update", {
+    id: editingProject.value.id,
+    ...projectForm.value,
+    title: projectForm.value.title.trim(),
+  });
+  if (store.detail?.project.id === updated.id) store.detail.project = updated;
+  await store.bootstrap();
+  editingProject.value = undefined;
+  store.notify("作品信息已保存。");
+}
 const store = useWorkspace(),
   router = useRouter(),
   archived = ref(false),
@@ -58,11 +82,32 @@ async function sample() {
       style:
         "第三人称有限视角，跟随林屿。对白克制，以动作与细节表达情绪。让悬疑自然地藏在日常里。",
       blueprintSections: [
-        { id: "core-conflict", title: "核心冲突", content: "一、陌生的来信：林屿收到一封写着明日天气的信。\n二、迟到的客人：信里提到的人走进书店。\n三、没有寄出的回信：林屿决定试着给未知的人回复。\n\n后续保持开放，探索来信与林屿过去的关系。" },
-        { id: "character-arcs", title: "角色弧线", content: "林屿从回避过去，逐步学会回应未知来信与真实关系。" },
-        { id: "story-phases", title: "阶段推进", content: "先建立书店日常，再让来信逐渐触及林屿的过去。" },
-        { id: "foreshadowing", title: "伏笔", content: "无风时响起的风铃；信封边角干燥。" },
-        { id: "open-questions", title: "待确认事项", content: "来信者的身份与来信机制保持开放。" },
+        {
+          id: "core-conflict",
+          title: "核心冲突",
+          content:
+            "一、陌生的来信：林屿收到一封写着明日天气的信。\n二、迟到的客人：信里提到的人走进书店。\n三、没有寄出的回信：林屿决定试着给未知的人回复。\n\n后续保持开放，探索来信与林屿过去的关系。",
+        },
+        {
+          id: "character-arcs",
+          title: "角色弧线",
+          content: "林屿从回避过去，逐步学会回应未知来信与真实关系。",
+        },
+        {
+          id: "story-phases",
+          title: "阶段推进",
+          content: "先建立书店日常，再让来信逐渐触及林屿的过去。",
+        },
+        {
+          id: "foreshadowing",
+          title: "伏笔",
+          content: "无风时响起的风铃；信封边角干燥。",
+        },
+        {
+          id: "open-questions",
+          title: "待确认事项",
+          content: "来信者的身份与来信机制保持开放。",
+        },
       ],
     });
     store.editChapter({
@@ -78,6 +123,7 @@ async function sample() {
 }
 async function toggleArchive(id: string, value: boolean) {
   await store.safe(async () => {
+    await store.flush();
     await store.api("project:update", { id, archived: value });
     await store.bootstrap();
     store.notify(value ? "故事已收进归档，可随时恢复。" : "故事已回到书架。");
@@ -87,7 +133,12 @@ async function deleteProject(id: string) {
   const project = store.projects.find((item) => item.id === id);
   if (!project?.archived) return;
   await store.safe(async () => {
+    await store.flush();
     await store.api("project:delete", id);
+    if (store.detail?.project.id === id) {
+      store.detail = null;
+      store.chapterId = "";
+    }
     await store.bootstrap();
     store.notify(`《${project.title}》及其专属内容已彻底删除。`);
   });
@@ -146,20 +197,33 @@ async function deleteProject(id: string) {
           <p>{{ p.premise || "暂无简介" }}</p>
           <div class="story-card-footer">
             <span>{{ date(p.updatedAt) }} · 最近编辑</span
-            ><button
-              v-if="!archived"
-              class="icon-button"
-              :aria-label="p.archived ? '恢复故事' : '归档故事'"
-              @click.stop="toggleArchive(p.id, !p.archived)"
-            >
-              <Archive :size="14" />
-            </button><NPopconfirm
-              v-else
+            ><ItemActions
+              :label="`作品《${p.title}》`"
+              :disabled="store.busy || store.imageBusy"
+              :actions="[
+                {
+                  key: 'archive',
+                  label: p.archived ? '恢复到书架' : '归档作品',
+                },
+              ]"
+              @edit="editProject(p)"
+              @action="toggleArchive(p.id, !p.archived)"
+            /><NPopconfirm
+              v-if="archived"
               positive-text="彻底删除"
               negative-text="取消"
               @positive-click="deleteProject(p.id)"
-              ><template #trigger><button class="icon-button danger-icon" :aria-label="`彻底删除故事《${p.title}》`" @click.stop><Trash2 :size="14" /></button></template>
-              确定彻底删除《{{ p.title }}》？章节、版本、记忆和故事专属图片将一并删除。此操作无法撤销。
+              ><template #trigger
+                ><button
+                  class="icon-button danger-icon"
+                  :aria-label="`彻底删除故事《${p.title}》`"
+                  @click.stop
+                >
+                  <Trash2 :size="14" /></button
+              ></template>
+              确定彻底删除《{{
+                p.title
+              }}》？章节、版本、记忆和故事专属图片将一并删除。此操作无法撤销。
             </NPopconfirm>
           </div>
         </div>
@@ -192,5 +256,39 @@ async function deleteProject(id: string) {
         }
       "
     />
+    <NModal
+      :show="!!editingProject"
+      @update:show="
+        (value) => {
+          if (!value) editingProject = undefined;
+        }
+      "
+      preset="card"
+      title="编辑作品信息"
+      :style="{ width: '560px' }"
+      ><label class="field-label first">作品名称</label
+      ><NInput v-model:value="projectForm.title" :maxlength="500" /><label
+        class="field-label"
+        >类型</label
+      ><NInput v-model:value="projectForm.genre" :maxlength="500" /><label
+        class="field-label"
+        >简介与创意</label
+      ><NInput
+        v-model:value="projectForm.premise"
+        type="textarea"
+        :maxlength="200000"
+        :autosize="{ minRows: 4, maxRows: 12 }"
+      /><template #footer
+        ><div class="modal-footer">
+          <NButton @click="editingProject = undefined">取消</NButton
+          ><NButton
+            type="primary"
+            :disabled="!projectForm.title.trim()"
+            @click="store.safe(saveProject)"
+            >保存信息</NButton
+          >
+        </div></template
+      ></NModal
+    >
   </main>
 </template>

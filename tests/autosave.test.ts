@@ -67,6 +67,63 @@ function setup() {
   return store;
 }
 describe("自动保存队列", () => {
+  it("全文改写保存生成时原文和范围，重新打开后继续保护后续编辑", async () => {
+    const store = setup();
+    store.editChapter({ document: textToDocument("生成时原文") });
+    store.writingScope = "document";
+    store.outputMode = "rewrite";
+    store.usePlanDraft = true;
+    let saved: unknown;
+    invoke.mockImplementation((action, payload) => {
+      if (action === "ai:run")
+        return Promise.resolve({ text: "改写稿", resultType: "rewrite" });
+      if (action === "scratch:save") saved = structuredClone(payload);
+      return Promise.resolve(payload);
+    });
+    await store.runTask("revise");
+    store.editChapter({ document: textToDocument("作者后来修改的原文") });
+    await store.flush();
+    const detail = structuredClone(JSON.parse(JSON.stringify(store.detail)));
+    invoke.mockImplementation((action) =>
+      Promise.resolve(
+        action === "project:get"
+          ? detail
+          : action === "scratch:get"
+            ? saved
+            : true,
+      ),
+    );
+    await store.openProject("story");
+    expect(store.sourceContent).toBe("生成时原文");
+    expect(store.chapter!.content).toBe("作者后来修改的原文");
+    expect(store.outputScope).toBe("document");
+    expect(store.resultType).toBe("rewrite");
+    expect(store.usePlanDraft).toBe(true);
+    expect(store.output).toBe("改写稿");
+  });
+  it("选中文段时优先按选区改写，保留生成时的原文范围", async () => {
+    const store = setup();
+    store.writingScope = "document";
+    store.selection = { text: "选中文段", from: 1, to: 5 };
+    invoke.mockImplementation((action, payload) =>
+      Promise.resolve(
+        action === "ai:run"
+          ? { text: "局部改写", resultType: "rewrite" }
+          : payload,
+      ),
+    );
+    await store.runTask("revise");
+    expect(invoke).toHaveBeenCalledWith(
+      "ai:run",
+      expect.objectContaining({
+        writingScope: "selection",
+        selection: "选中文段",
+      }),
+    );
+    expect(store.outputScope).toBe("selection");
+    expect(store.outputSelection).toEqual({ text: "选中文段", from: 1, to: 5 });
+    await store.flush();
+  });
   function settingsForm(): SettingsInput {
     const provider = {
       baseUrl: "http://localhost/v1",

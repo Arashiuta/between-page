@@ -1,4 +1,20 @@
 import type { TaskKind } from "./types";
+export const toolGroups: { id: string; name: string; kinds: TaskKind[] }[] = [
+  { id: "brainstorm", name: "灵感脑暴", kinds: ["brainstorm"] },
+  { id: "organize", name: "素材整理", kinds: ["organize"] },
+  {
+    id: "planning",
+    name: "设定与蓝图",
+    kinds: ["develop", "outline", "adjust"],
+  },
+  { id: "writing", name: "正文写作", kinds: ["opening", "chapter"] },
+  { id: "polish", name: "文段打磨", kinds: ["revise", "scene", "dialogue"] },
+  { id: "checking", name: "故事检查", kinds: ["check", "pacing", "arc"] },
+  { id: "notes", name: "记忆整理", kinds: ["notes"] },
+  { id: "prompt", name: "插画构思", kinds: ["prompt"] },
+];
+export const toolGroupFor = (kind: TaskKind) =>
+  toolGroups.find((g) => g.kinds.includes(kind))!;
 
 export const toolCategories = [
   "灵感",

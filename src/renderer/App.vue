@@ -279,11 +279,11 @@ async function create() {
             :class="{ selected: form.mode === 'novel' }"
             @click="
               form.mode = 'novel';
-              form.creativeFreedom = 'balanced';
+              form.creativeFreedom = 'guided';
             "
           >
             <BookOpen :size="21" /><strong>长篇创作</strong
-            ><span>从整体构思，走向完整的作品</span>
+            ><span>完善设定与分层大纲，逐章写成小说</span>
           </button>
         </div>
         <label class="field-label"

@@ -11,6 +11,7 @@ import {
 } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import type { ImageAsset } from "../../shared/types";
+import ImageActions from "./ImageActions.vue";
 const props = defineProps<{ initialPrompt?: string }>(),
   store = useWorkspace(),
   prompt = ref(props.initialPrompt || ""),
@@ -190,22 +191,35 @@ function stale(image: ImageAsset) {
       </h3>
     </div>
     <div v-if="illustrations.length" class="image-grid">
-      <button
+      <article
         v-for="image in illustrations"
         :key="image.id"
-        class="image-card"
-        @click="preview = image"
+        class="image-entry"
       >
-        <img :src="store.imageUrl(image.id)" :alt="image.name" />
-        <div>
-          <strong>{{ image.name }}</strong
-          ><span v-if="stale(image)" class="stale-label"
-            ><AlertCircle :size="11" />正文已变化，可检查插画</span
-          ><span v-else>{{
-            new Date(image.createdAt).toLocaleDateString("zh-CN")
-          }}</span>
-        </div>
-      </button>
+        <button class="image-card" @click="preview = image">
+          <img :src="store.imageUrl(image.id)" :alt="image.name" />
+          <div>
+            <strong>{{ image.name }}</strong
+            ><span v-if="stale(image)" class="stale-label"
+              ><AlertCircle :size="11" />正文已变化，可检查插画</span
+            ><span v-else>{{
+              new Date(image.createdAt).toLocaleDateString("zh-CN")
+            }}</span>
+          </div></button
+        ><ImageActions
+          :image="image"
+          @updated="
+            (value) => {
+              if (preview?.id === value.id) preview = value;
+            }
+          "
+          @deleted="
+            () => {
+              if (preview?.id === image.id) preview = null;
+            }
+          "
+        />
+      </article>
     </div>
     <div v-else class="inline-empty">
       <Images :size="25" />

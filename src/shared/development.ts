@@ -31,7 +31,7 @@ export const developmentDraftSchema = z.object({
         base: z.string().max(100).nullable(),
       }),
     )
-    .min(1)
+    .min(0)
     .max(30),
   warnings: z.array(z.string().max(2000)).max(20),
   appliedIds: z.array(z.string().uuid()).max(30),

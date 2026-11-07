@@ -3,6 +3,12 @@ import { createPinia, setActivePinia } from "pinia";
 import { StoryRepository } from "../src/main/database";
 import { useWorkspace } from "../src/renderer/stores/workspace";
 import { textToDocument } from "../src/shared/document";
+import { createFragment } from "../src/main/writing";
+import {
+  removePlanning,
+  savePlanning,
+  planningBase,
+} from "../src/main/planning";
 import type { ImageAsset, WorkflowRun } from "../src/shared/types";
 
 const repositories: StoryRepository[] = [];
@@ -193,8 +199,25 @@ function setupStore() {
   const fixture = setup();
   const { repo, project, first } = fixture;
   const invoke = vi.fn(async (action: string, payload: unknown) => {
+    if (action === "project:get") return repo.getDetail(payload as string);
+    if (action === "scratch:get")
+      return repo.getSetting(`scratch.${payload as string}`, null);
+    if (action === "planning:remove") {
+      const value = payload as {
+        projectId: string;
+        target: Parameters<typeof removePlanning>[2];
+      };
+      return removePlanning(repo, value.projectId, value.target);
+    }
     if (action === "chapter:delete")
-      return repo.deleteChapter(payload as string);
+      return repo.deleteChapter(
+        typeof payload === "string" ? payload : (payload as { id: string }).id,
+      );
+    if (action === "scratch:save") {
+      const value = payload as { projectId: string };
+      repo.setSetting(`scratch.${value.projectId}`, value);
+      return true;
+    }
     if (action === "chapter:update") {
       const { id, ...patch } = payload as { id: string } & Parameters<
         StoryRepository["updateChapter"]
@@ -212,6 +235,71 @@ function setupStore() {
 }
 
 describe("章节删除与编辑状态", () => {
+  it("删除分卷清理已失效的生成目标和暂存草稿，保留章节与正文", async () => {
+    const { repo, project, first, store } = setupStore();
+    const volume = savePlanning(
+      repo,
+      project.id,
+      { level: "volume" },
+      {
+        title: "第一卷",
+        content: "卷纲",
+        confirm: true,
+      },
+    ).target;
+    store.detail = repo.getDetail(project.id);
+    store.editChapter({ document: textToDocument("保留正文") });
+    store.planningTarget = { level: "chapter", parentId: volume.id };
+    store.planningDraft = {
+      projectId: project.id,
+      target: store.planningTarget,
+      base: planningBase(repo, project.id),
+      items: [],
+    };
+    store.resultType = "planning";
+    store.output = "已删除卷的候选";
+    store.scratch();
+    await store.removePlanning(volume);
+    await store.flush();
+    expect(repo.getChapter(first.id).content).toBe("保留正文");
+    expect(store.planningTarget).toBeUndefined();
+    expect(store.planningDraft).toBeNull();
+    await store.openProject(project.id);
+    expect(store.planningTarget).toBeUndefined();
+    expect(store.planningDraft).toBeNull();
+    expect(store.output).toBe("");
+  });
+  it("保存进行中删除当前片段，等待保存完成且不复活片段，回到正式章节", async () => {
+    const { repo, project, first, store, invoke } = setupStore();
+    const fragment = createFragment(repo, project.id);
+    store.detail = repo.getDetail(project.id);
+    store.chapterId = fragment.id;
+    const original = invoke.getMockImplementation()!;
+    let release!: () => void;
+    invoke.mockImplementation(async (action, payload) => {
+      if (action === "chapter:update")
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      return original(action, payload);
+    });
+    store.editChapter({ document: textToDocument("待保存片段") });
+    const saving = store.flush(),
+      deleting = store.deleteChapter(fragment.id);
+    expect(
+      invoke.mock.calls.some(([action]) => action === "chapter:delete"),
+    ).toBe(false);
+    release();
+    await saving;
+    await deleting;
+    await store.flush();
+    expect(repo.getDetail(project.id).fragments).toEqual([]);
+    expect(store.chapterId).toBe(first.id);
+    expect(() => repo.getChapter(fragment.id)).toThrow();
+    expect(
+      invoke.mock.calls.filter(([action]) => action === "chapter:update"),
+    ).toHaveLength(1);
+  });
   it("删除非当前章节前保存待保存正文，保持当前章节及选区", async () => {
     const { repo, first, second, store, invoke } = setupStore();
     store.editChapter({ document: textToDocument("尚未自动保存的正文") });
@@ -225,11 +313,12 @@ describe("章节删除与编辑状态", () => {
     expect(store.chapterId).toBe(first.id);
     expect(store.selection?.text).toBe("正文");
     await store.flush();
-    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke.mock.calls.at(-1)?.[0]).toBe("scratch:save");
   });
 
-  it("删除当前章节后切到下一章，清空已删除章节的生成结果与选区", async () => {
-    const { first, second, store } = setupStore();
+  it("删除当前章节后切到下一章，清空生成结果与重启后的暂存引用", async () => {
+    const { repo, project, first, second, store } = setupStore();
     store.output = "旧生成结果";
     store.outputChapterId = first.id;
     store.outputSelection = store.selection = {
@@ -239,6 +328,10 @@ describe("章节删除与编辑状态", () => {
     };
     store.memoryRevisionId = "old-revision";
     store.memoryRecords = [{ kind: "fact", content: "旧事实" }];
+    store.sourceContent = "旧正文";
+    store.outputScope = "selection";
+    store.resultType = "rewrite";
+    store.scratch();
     await store.deleteChapter(first.id);
     expect(store.chapterId).toBe(second.id);
     expect(store.selection).toBeNull();
@@ -246,6 +339,22 @@ describe("章节删除与编辑状态", () => {
     expect(store.outputChapterId).toBe("");
     expect(store.outputSelection).toBeNull();
     expect(store.memoryRecords).toBeNull();
+    expect(store.memoryRevisionId).toBe("");
+    await store.flush();
+    expect(repo.getSetting(`scratch.${project.id}`, null)).toMatchObject({
+      output: "",
+      chapterId: "",
+      memoryRecords: null,
+      sourceContent: "",
+      outputScope: null,
+      resultType: null,
+    });
+    expect(repo.getSetting(`scratch.${project.id}`, null)).not.toHaveProperty(
+      "memoryRevisionId",
+    );
+    await store.openProject(project.id);
+    expect(store.outputChapterId).toBe("");
+    expect(store.output).toBe("");
     expect(store.memoryRevisionId).toBe("");
   });
 

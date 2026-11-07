@@ -4,6 +4,7 @@ import { NModal, NButton } from "naive-ui";
 import { Images, Download, ArrowUpRight } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import type { ImageAsset } from "../../shared/types";
+import ImageActions from "../components/ImageActions.vue";
 const store = useWorkspace(),
   filter = ref("illustration"),
   preview = ref<ImageAsset | null>(null);
@@ -39,21 +40,30 @@ const items = computed(() =>
       </button>
     </div>
     <div v-if="items.length" class="gallery-grid">
-      <button
-        v-for="image in items"
-        :key="image.id"
-        class="image-card"
-        @click="preview = image"
-      >
-        <img :src="store.imageUrl(image.id)" :alt="image.name" />
-        <div>
-          <strong>{{ image.name }}</strong
-          ><span>{{
-            store.projects.find((p) => p.id === image.projectId)?.title ||
-            "创作资料库"
-          }}</span>
-        </div>
-      </button>
+      <article v-for="image in items" :key="image.id" class="image-entry">
+        <button class="image-card" @click="preview = image">
+          <img :src="store.imageUrl(image.id)" :alt="image.name" />
+          <div>
+            <strong>{{ image.name }}</strong
+            ><span>{{
+              store.projects.find((p) => p.id === image.projectId)?.title ||
+              "创作资料库"
+            }}</span>
+          </div></button
+        ><ImageActions
+          :image="image"
+          @updated="
+            (value) => {
+              if (preview?.id === value.id) preview = value;
+            }
+          "
+          @deleted="
+            () => {
+              if (preview?.id === image.id) preview = null;
+            }
+          "
+        />
+      </article>
     </div>
     <div v-else class="large-empty">
       <div class="empty-icon"><Images :size="29" /></div>
@@ -90,6 +100,7 @@ const items = computed(() =>
         <pre v-if="preview.prompt" class="prompt-preview">{{
           preview.prompt
         }}</pre>
+        <p v-if="preview.notes" class="field-help">{{ preview.notes }}</p>
         <div class="modal-footer">
           <NButton
             type="primary"

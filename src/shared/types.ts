@@ -3,11 +3,82 @@ export type CardKind = "character" | "world" | "inspiration";
 export type MemoryKind =
   "fact" | "state" | "relationship" | "knowledge" | "foreshadow" | "summary";
 export const taskKinds = [
-  "opening", "chapter", "develop", "outline", "adjust", "check", "notes",
-  "prompt", "revise", "organize", "brainstorm", "scene", "dialogue", "pacing", "arc",
+  "opening",
+  "chapter",
+  "develop",
+  "outline",
+  "adjust",
+  "check",
+  "notes",
+  "prompt",
+  "revise",
+  "organize",
+  "brainstorm",
+  "scene",
+  "dialogue",
+  "pacing",
+  "arc",
 ] as const;
 export type TaskKind = (typeof taskKinds)[number];
 export type CreativeFreedom = "guided" | "balanced" | "free";
+export interface PlanBlock {
+  content: string;
+  confirmed?: string;
+  reviewReason?: string;
+}
+export interface NovelPlan {
+  synopsis: PlanBlock;
+  volumes: { id: string; title: string; plan: PlanBlock }[];
+}
+export interface SceneOutline {
+  id: string;
+  title: string;
+  plan: PlanBlock;
+}
+export interface PlanningTarget {
+  level: "synopsis" | "volume" | "chapter" | "scene";
+  id?: string;
+  parentId?: string;
+  count?: number;
+}
+export interface PlanningDraft {
+  projectId: string;
+  target: PlanningTarget;
+  base: string;
+  items: { id: string; title: string; content: string }[];
+}
+export interface PlanningVersion {
+  id: string;
+  createdAt: string;
+  label: string;
+  novelPlan: NovelPlan;
+  chapterOrder?: string[];
+  chapters: {
+    id: string;
+    title?: string;
+    plan: string;
+    planMeta?: Omit<PlanBlock, "content">;
+    volumeId?: string | null;
+    scenes?: SceneOutline[];
+  }[];
+}
+export interface PlanningTreeRef {
+  level: "synopsis" | "unassigned" | "volume" | "chapter" | "scene";
+  id?: string;
+  parentId?: string;
+}
+export interface PlanningMove {
+  source: PlanningTreeRef;
+  target: PlanningTreeRef;
+  placement: "before" | "inside" | "after";
+}
+export interface PlanningMovePreview {
+  base: string;
+  changed: boolean;
+  requiresNormalization: boolean;
+  beforeOrder: string[];
+  afterOrder: string[];
+}
 export interface BlueprintSection {
   id: string;
   title: string;
@@ -91,6 +162,7 @@ export interface Project {
   premise: string;
   mode: Mode;
   creativeFreedom?: CreativeFreedom;
+  novelPlan?: NovelPlan;
   genre: string;
   world: string;
   style: string;
@@ -108,6 +180,19 @@ export interface Chapter {
   title: string;
   position: number;
   plan: string;
+  kind?: "chapter" | "fragment";
+  volumeId?: string | null;
+  planMeta?: Omit<PlanBlock, "content">;
+  scenes?: SceneOutline[];
+  planningReview?: string;
+  fragmentContext?: {
+    time: string;
+    place: string;
+    viewpoint: string;
+    connection: string;
+    anchorId?: string;
+  };
+  incorporatedInto?: string[];
   document: DocumentNode;
   content: string;
   acceptedRevisionId: string | null;
@@ -203,6 +288,7 @@ export interface ImageAsset {
   revisionId: string | null;
   kind: "reference" | "illustration" | "cover";
   name: string;
+  notes?: string;
   /** Portable path relative to data/assets; older records may use a flat filename. */
   filename: string;
   prompt: string;
@@ -274,6 +360,7 @@ export type SettingsInput = Pick<Settings, "imageSize" | "imageQuality"> & {
 export interface ProjectDetail {
   project: Project;
   chapters: Chapter[];
+  fragments?: Chapter[];
   cards: Card[];
   memories: Memory[];
   images: ImageAsset[];
@@ -293,6 +380,11 @@ export interface TaskRequest {
   instruction: string;
   selection?: string;
   workflowContext?: string;
+  planningTarget?: PlanningTarget;
+  writingScope?: "selection" | "document";
+  outputMode?: "rewrite" | "analysis";
+  usePlanDraft?: boolean;
+  referenceNovelPlan?: boolean;
 }
 export interface TaskResult {
   text: string;
@@ -300,6 +392,8 @@ export interface TaskResult {
   memoryRecords?: { kind: MemoryKind; content: string }[];
   memoryRevisionId?: string;
   developmentDraft?: StoryDevelopmentDraft;
+  planningDraft?: PlanningDraft;
+  resultType?: "prose" | "rewrite" | "analysis" | "planning";
 }
 export interface ImageRequest {
   projectId: string;

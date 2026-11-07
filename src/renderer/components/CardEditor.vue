@@ -11,6 +11,7 @@ import {
   NCollapse,
   NCollapseItem,
   NImageGroup,
+  NPopconfirm,
 } from "naive-ui";
 import { ImagePlus, X, FileUp, Plus, Sparkles, Square } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
@@ -45,6 +46,7 @@ const instruction = ref(""),
   append = ref(true),
   requestId = ref("");
 const form = ref<CardInput>(empty());
+let draftBase = "";
 const previewing = ref(false),
   previewIndex = ref(0);
 const referenceUrls = computed(() =>
@@ -155,6 +157,7 @@ async function organize() {
   organizing.value = true;
   requestId.value = crypto.randomUUID();
   await store.safe(async () => {
+    draftBase = JSON.stringify(form.value);
     const value = await store.api<MaterialDraft>("card:organize", {
       requestId: requestId.value,
       instruction: instruction.value,
@@ -173,6 +176,13 @@ async function organize() {
 }
 function apply() {
   if (!draft.value) return;
+  if (draftBase !== JSON.stringify(form.value)) {
+    store.notify(
+      "资料或原始文档已有修改，请重新整理后应用，避免覆盖后来的编辑。",
+      "error",
+    );
+    return;
+  }
   const value = applyMaterialDraft(form.value, draft.value, append.value, () =>
     crypto.randomUUID(),
   );
@@ -316,13 +326,21 @@ function sourceNames(ids: string[]) {
                 :disabled="busy"
                 :maxlength="200"
                 placeholder="分区标题，例如：能力系统、亲密关系、压力反应"
-              /><NButton
-                quaternary
-                :disabled="busy"
-                @click="form.sections!.splice(index, 1)"
-                :aria-label="`移除分区 ${section.title || index + 1}`"
-                ><template #icon><X :size="15" /></template
-              ></NButton>
+              /><NPopconfirm
+                positive-text="移除分区"
+                negative-text="取消"
+                @positive-click="form.sections!.splice(index, 1)"
+                ><template #trigger
+                  ><NButton
+                    quaternary
+                    :disabled="busy"
+                    :aria-label="`移除分区 ${section.title || index + 1}`"
+                    ><template #icon
+                      ><X :size="15" /></template></NButton></template
+                >移除「{{
+                  section.title || "未命名分区"
+                }}」及其内容？原始文档与其他分区保留，保存资料后生效。</NPopconfirm
+              >
             </div>
             <NInput
               v-model:value="section.content"
@@ -407,16 +425,38 @@ function sourceNames(ids: string[]) {
               <div class="document-toolbar">
                 <NCheckbox v-model:checked="doc.enabled" :disabled="busy"
                   >参与整理与写作参考</NCheckbox
-                ><NButton
-                  text
-                  :disabled="busy"
-                  @click="form.documents!.splice(index, 1)"
-                  >移除原文</NButton
+                ><NPopconfirm
+                  positive-text="移除原文"
+                  negative-text="取消"
+                  @positive-click="
+                    () => {
+                      form.documents!.splice(index, 1);
+                      form.sections?.forEach(
+                        (s) =>
+                          (s.sourceIds = s.sourceIds.filter(
+                            (id) => id !== doc.id,
+                          )),
+                      );
+                    }
+                  "
+                  ><template #trigger
+                    ><NButton text :disabled="busy">移除原文</NButton></template
+                  >移除原始文档「{{
+                    doc.name
+                  }}」？已整理分区保留，仅解除该文档的来源关联，保存资料后生效。</NPopconfirm
                 >
               </div>
+              <label class="field-label">文档名称</label
+              ><NInput
+                v-model:value="doc.name"
+                :disabled="busy"
+                :maxlength="500"
+              />
+              <label class="field-label">原文内容</label>
               <NInput
-                :value="doc.content"
-                readonly
+                v-model:value="doc.content"
+                :disabled="busy"
+                :maxlength="materialLimits.document"
                 type="textarea"
                 :autosize="{ minRows: 8, maxRows: 18 }"
               />
@@ -454,7 +494,14 @@ function sourceNames(ids: string[]) {
             <NInput
               v-model:value="section.title"
               placeholder="分区标题"
-            /><NInput
+            /><NPopconfirm
+              positive-text="移除建议分区"
+              negative-text="取消"
+              @positive-click="draft.sections.splice(index, 1)"
+              ><template #trigger
+                ><NButton size="small">移除此项建议</NButton></template
+              >移除这项未采用的整理建议？当前资料保留。</NPopconfirm
+            ><NInput
               v-model:value="section.content"
               type="textarea"
               :autosize="{ minRows: 4, maxRows: 14 }"

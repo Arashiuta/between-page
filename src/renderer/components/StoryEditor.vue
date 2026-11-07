@@ -5,7 +5,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { Bold, Italic, Heading2, Undo2, Redo2, Quote } from "lucide-vue-next";
 import type { DocumentNode } from "../../shared/types";
 import { textToDocument } from "../../shared/document";
-const props = defineProps<{ document: DocumentNode }>();
+const props = defineProps<{ document: DocumentNode; placeholder?: string }>();
 const emit = defineEmits<{
   update: [document: DocumentNode];
   selection: [selection: { text: string; from: number; to: number } | null];
@@ -115,9 +115,10 @@ defineExpose({ replace, append, replaceSelected });
     </div>
     <div class="editor-paper">
       <div v-if="isEmpty" class="editor-placeholder">
-        故事从这里开始。<br /><span
-          >写下第一句话，或只给几个关键词让 AI 开篇。设定和计划都可以之后再补。</span
-        >
+        故事从这里开始。<br /><span>{{
+          placeholder ||
+          "写下第一句话，或只给几个关键词让 AI 开篇。设定和计划都可以之后再补。"
+        }}</span>
       </div>
       <EditorContent :editor="editor" />
     </div>
