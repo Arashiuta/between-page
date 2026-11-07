@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
-import { NModal, NButton, NSlider } from "naive-ui";
+import { NModal, NButton, NSlider, NPopconfirm } from "naive-ui";
 import { ImagePlus, RotateCcw } from "lucide-vue-next";
 import type { CoverCrop, CoverUpload, Project } from "../../shared/types";
 import { COVER_LIMIT, cropCover, coverImageStyle } from "../../shared/cover";
@@ -205,7 +205,7 @@ async function save() {
   }
 }
 async function remove() {
-  if (!props.project) return;
+  if (!props.project || busy.value || loading.value) return;
   busy.value = true;
   try {
     await store.saveProjectCover(props.project.id, null);
@@ -288,9 +288,20 @@ async function remove() {
       <NButton :disabled="!width || busy || loading" @click="reset"
         ><template #icon><RotateCcw :size="15" /></template>重置取景</NButton
       >
-      <NButton v-if="project?.cover" :disabled="busy || loading" @click="remove"
-        >移除封面</NButton
+      <NPopconfirm
+        v-if="project?.cover"
+        positive-text="移除封面"
+        negative-text="取消"
+        :positive-button-props="{ disabled: busy || loading }"
+        @positive-click="remove"
       >
+        <template #trigger>
+          <NButton :disabled="busy || loading">移除封面</NButton>
+        </template>
+        确定移除《{{
+          project.title
+        }}》的封面？作品将恢复默认封面，原图片保留在插画收藏中。
+      </NPopconfirm>
     </div>
     <template #footer
       ><div class="modal-footer">

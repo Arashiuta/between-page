@@ -23,6 +23,7 @@ defineEmits<{ edit: []; action: [key: string] }>();
     </button>
     <NDropdown
       trigger="click"
+      placement="bottom-end"
       :options="actions"
       :disabled="disabled"
       @select="(key: string) => $emit('action', key)"

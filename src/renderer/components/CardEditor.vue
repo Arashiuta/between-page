@@ -383,19 +383,29 @@ function sourceNames(ids: string[]) {
               >
                 <img :src="store.imageUrl(id)" :alt="`参考图片 ${index + 1}`" />
               </button>
-              <button
-                type="button"
-                class="reference-remove"
-                :disabled="busy"
-                aria-label="取消关联图片"
-                @click="
+              <NPopconfirm
+                positive-text="取消关联"
+                negative-text="保留"
+                :positive-button-props="{ disabled: busy }"
+                @positive-click="
                   form.referenceIds = form.referenceIds.filter(
                     (value) => value !== id,
                   )
                 "
               >
-                <X :size="12" />
-              </button>
+                <template #trigger>
+                  <button
+                    type="button"
+                    class="reference-remove"
+                    :disabled="busy"
+                    :aria-label="`取消关联参考图片 ${index + 1}`"
+                  >
+                    <X :size="12" />
+                  </button>
+                </template>
+                确定取消关联参考图片
+                {{ index + 1 }}？原图片保留在插画收藏中，保存资料后生效。
+              </NPopconfirm>
             </div>
           </div>
         </NTabPane>

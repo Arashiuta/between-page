@@ -7,6 +7,7 @@ import {
   NInput,
   NSelect,
   NButton,
+  NPopconfirm,
   darkTheme,
 } from "naive-ui";
 import {
@@ -326,12 +327,18 @@ async function create() {
           <NButton :disabled="creating" @click="coverEditor = true">{{
             newCover ? "调整或更换封面" : "上传封面"
           }}</NButton
-          ><NButton
+          ><NPopconfirm
             v-if="newCover"
-            :disabled="creating"
-            @click="newCover = undefined"
-            >移除封面</NButton
+            positive-text="移除封面"
+            negative-text="取消"
+            :positive-button-props="{ disabled: creating }"
+            @positive-click="newCover = undefined"
           >
+            <template #trigger>
+              <NButton :disabled="creating">移除封面</NButton>
+            </template>
+            确定移除已选择的封面？新故事将使用默认封面。
+          </NPopconfirm>
         </div>
         <template #footer
           ><div class="modal-footer">

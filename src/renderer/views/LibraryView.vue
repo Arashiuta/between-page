@@ -5,12 +5,10 @@ import {
   Plus,
   ArrowUpRight,
   BookOpen,
-  Feather,
   ArrowRight,
   Archive,
-  Trash2,
 } from "lucide-vue-next";
-import { NPopconfirm, NModal, NInput, NButton } from "naive-ui";
+import { NModal, NInput, NButton } from "naive-ui";
 import { useWorkspace } from "../stores/workspace";
 import { textToDocument } from "../../shared/document";
 import StoryCover from "../components/StoryCover.vue";
@@ -19,6 +17,8 @@ import ItemActions from "../components/ItemActions.vue";
 import type { Project } from "../../shared/types";
 const editingCover = ref<Project>();
 const editingProject = ref<Project>();
+const projectToDelete = ref<Pick<Project, "id" | "title"> | null>(null);
+const deletingProject = ref(false);
 const projectForm = ref({ title: "", premise: "", genre: "" });
 function editProject(project: Project) {
   editingProject.value = project;
@@ -129,19 +129,31 @@ async function toggleArchive(id: string, value: boolean) {
     store.notify(value ? "故事已收进归档，可随时恢复。" : "故事已回到书架。");
   });
 }
-async function deleteProject(id: string) {
-  const project = store.projects.find((item) => item.id === id);
-  if (!project?.archived) return;
-  await store.safe(async () => {
+function selectProjectAction(key: string, project: Project) {
+  if (store.busy || store.imageBusy || deletingProject.value) return;
+  if (key === "archive") void toggleArchive(project.id, !project.archived);
+  if (key === "delete" && project.archived)
+    projectToDelete.value = { id: project.id, title: project.title };
+}
+async function confirmDeleteProject() {
+  const project = projectToDelete.value;
+  if (!project || deletingProject.value || store.busy || store.imageBusy)
+    return false;
+  deletingProject.value = true;
+  const deleted = await store.safe(async () => {
     await store.flush();
-    await store.api("project:delete", id);
-    if (store.detail?.project.id === id) {
+    await store.api("project:delete", project.id);
+    if (store.detail?.project.id === project.id) {
       store.detail = null;
       store.chapterId = "";
     }
     await store.bootstrap();
     store.notify(`《${project.title}》及其专属内容已彻底删除。`);
+    return true;
   });
+  deletingProject.value = false;
+  if (deleted) projectToDelete.value = null;
+  return false;
 }
 </script>
 <template>
@@ -199,32 +211,19 @@ async function deleteProject(id: string) {
             <span>{{ date(p.updatedAt) }} · 最近编辑</span
             ><ItemActions
               :label="`作品《${p.title}》`"
-              :disabled="store.busy || store.imageBusy"
+              :disabled="store.busy || store.imageBusy || deletingProject"
               :actions="[
                 {
                   key: 'archive',
                   label: p.archived ? '恢复到书架' : '归档作品',
                 },
+                ...(p.archived
+                  ? [{ key: 'delete', label: '彻底删除作品' }]
+                  : []),
               ]"
               @edit="editProject(p)"
-              @action="toggleArchive(p.id, !p.archived)"
-            /><NPopconfirm
-              v-if="archived"
-              positive-text="彻底删除"
-              negative-text="取消"
-              @positive-click="deleteProject(p.id)"
-              ><template #trigger
-                ><button
-                  class="icon-button danger-icon"
-                  :aria-label="`彻底删除故事《${p.title}》`"
-                  @click.stop
-                >
-                  <Trash2 :size="14" /></button
-              ></template>
-              确定彻底删除《{{
-                p.title
-              }}》？章节、版本、记忆和故事专属图片将一并删除。此操作无法撤销。
-            </NPopconfirm>
+              @action="(key) => selectProjectAction(key, p)"
+            />
           </div>
         </div>
       </article>
@@ -255,6 +254,31 @@ async function deleteProject(id: string) {
           if (!v) editingCover = undefined;
         }
       "
+    />
+    <NModal
+      :show="!!projectToDelete"
+      preset="dialog"
+      type="error"
+      title="彻底删除作品？"
+      :content="`确定彻底删除《${projectToDelete?.title ?? ''}》？章节、版本、记忆和故事专属图片将一并删除。此操作无法撤销。`"
+      positive-text="确认删除"
+      negative-text="取消"
+      :positive-button-props="{
+        type: 'error',
+        loading: deletingProject,
+        disabled: store.busy || store.imageBusy,
+      }"
+      :negative-button-props="{ disabled: deletingProject }"
+      :mask-closable="!deletingProject"
+      :close-on-esc="!deletingProject"
+      :closable="!deletingProject"
+      @update:show="
+        (value) => {
+          if (!value && !deletingProject) projectToDelete = null;
+        }
+      "
+      @positive-click="confirmDeleteProject"
+      @negative-click="projectToDelete = null"
     />
     <NModal
       :show="!!editingProject"
