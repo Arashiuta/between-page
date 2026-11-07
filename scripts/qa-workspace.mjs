@@ -1,10 +1,19 @@
-// Isolated local UI acceptance harness. Uses an in-memory database and no model service.
+// Local acceptance server: isolated database + production services + simulated models.
 import { createServer } from "vite";
 import vue from "@vitejs/plugin-vue";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdir, mkdtemp } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const qaRoot = join(root, ".qa");
+await mkdir(qaRoot, { recursive: true });
+const directory = await mkdtemp(join(qaRoot, "workbench-"));
 let handle;
+const clients = new Set();
+const traces = [];
+const png =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
 const server = await createServer({
   configFile: false,
   root: resolve(root, "src/renderer"),
@@ -23,16 +32,39 @@ const server = await createServer({
           {
             tag: "script",
             injectTo: "head-prepend",
-            children: `window.storybook={invoke:async(action,payload)=>{const r=await fetch('/__qa_api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload})});const v=await r.json();if(!v.ok)throw Error(v.error);return v.data},onProgress:()=>()=>{},onClosing:()=>()=>{}};`,
+            children: `window.storybook={invoke:async(action,payload)=>{const r=await fetch('/__qa_api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload})});const v=await r.json();if(!v.ok)throw Error(v.error);return v.data},onProgress:fn=>{const s=new EventSource('/__qa_progress');s.onmessage=e=>fn(JSON.parse(e.data));return()=>s.close()},onClosing:()=>()=>{}};`,
           },
         ];
       },
       configureServer(vite) {
         vite.middlewares.use(async (req, res, next) => {
+          if (req.url === "/__qa_progress") {
+            res.writeHead(200, {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              Connection: "keep-alive",
+            });
+            res.write("\n");
+            clients.add(res);
+            req.on("close", () => clients.delete(res));
+            return;
+          }
           if (req.url?.startsWith("/__qa_asset/")) {
             res.setHeader("Content-Type", "image/svg+xml");
             res.end(
-              '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#d4dcca"/><circle cx="460" cy="90" r="42" fill="#f5deb0"/><path d="M0 360L180 170 330 300 450 200 600 350V400H0" fill="#809582"/><text x="24" y="45" font-size="24" fill="#34483d">本地验收图片</text></svg>',
+              '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#d4dcca"/><circle cx="460" cy="90" r="42" fill="#f5deb0"/><path d="M0 360L180 170 330 300 450 200 600 350V400H0" fill="#809582"/><text x="24" y="45" font-size="24" fill="#34483d">本地模拟参考图</text></svg>',
+            );
+            return;
+          }
+          if (req.url === "/__qa_state") {
+            res.setHeader("Content-Type", "application/json");
+            res.end(
+              JSON.stringify({
+                directory,
+                traces,
+                projects: repo.listProjects(),
+                details: repo.listProjects().map((p) => repo.getDetail(p.id)),
+              }),
             );
             return;
           }
@@ -44,9 +76,9 @@ const server = await createServer({
             const data = await handle(action, payload);
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ ok: true, data }));
-          } catch (error) {
+          } catch (e) {
             res.statusCode = 400;
-            res.end(JSON.stringify({ ok: false, error: error.message }));
+            res.end(JSON.stringify({ ok: false, error: e.message }));
           }
         });
       },
@@ -59,156 +91,229 @@ const server = await createServer({
     fs: { allow: [root] },
   },
 });
-const load = (path) => server.ssrLoadModule(resolve(root, path));
+const load = (p) => server.ssrLoadModule(resolve(root, p));
 const { StoryRepository } = await load("src/main/database.ts");
-const planning = await load("src/main/planning.ts");
-const writing = await load("src/main/writing.ts");
-const creation = await load("src/main/conversations.ts");
+const { workspaceHandlers } = await load("src/main/workspace-handlers.ts");
+const { runCreationTask, prepareTaskPreview } = await load(
+  "src/main/conversations.ts",
+);
 const { defaultRoleSettings } = await load("src/shared/roles.ts");
+const { refineMaterial } = await load("src/main/materials.ts");
+const { resolveTextModel } = await load("src/shared/models.ts");
 const { normalizeSoftware } = await load("src/shared/appearance.ts");
 const { textToDocument } = await load("src/shared/document.ts");
-const repo = new StoryRepository(":memory:");
-const novel = repo.createProject({
-  title: "沙海来信 · 长篇验收",
-  premise: "修理师带着一封陌生来信，寻找沙海深处消失的故乡。",
-  mode: "novel",
-});
-planning.savePlanning(
-  repo,
-  novel.id,
-  { level: "synopsis" },
-  {
-    content:
-      "主题：记忆与归属。主线：修理师沿驿站寻找故乡，结局由他选择重建而非回到过去。",
-    confirm: true,
-  },
-);
-const volume = planning.savePlanning(
-  repo,
-  novel.id,
-  { level: "volume", id: novel.novelPlan.volumes[0].id },
-  {
-    title: "第一卷 · 沙海驿站",
-    content: "找到燃料，认识向导，发现来信上的印记。",
-    confirm: true,
-  },
-).target;
-const c = repo.getDetail(novel.id).chapters[0];
-planning.savePlanning(
-  repo,
-  novel.id,
-  { level: "chapter", id: c.id },
-  {
-    title: "第一封信",
-    content: "在修理铺发现来信，决定前往驿站。",
-    confirm: true,
-  },
-);
-if (process.argv.includes("--planning-tree")) {
-  const secondVolume = planning.savePlanning(
-    repo,
-    novel.id,
-    { level: "volume" },
-    { title: "第二卷 · 旧公路", content: "追随印记", confirm: true },
-  ).target.id;
-  planning.savePlanning(
-    repo,
-    novel.id,
-    { level: "volume" },
-    { title: "第三卷 · 空卷", content: "" },
-  );
-  const chapters = [
-    c,
-    repo.createChapter(novel.id),
-    repo.createChapter(novel.id),
-    repo.createChapter(novel.id),
-  ];
-  for (const [i, chapter] of chapters.entries()) {
-    const value = repo.getChapter(chapter.id);
-    value.title = ["第一封信", "路口相逢", "沙海驿站", "修理铺的清晨"][i];
-    value.volumeId = i === 3 ? null : i === 1 ? secondVolume : volume.id;
-    repo.db
-      .prepare("UPDATE chapters SET payload = ? WHERE id = ?")
-      .run(JSON.stringify(value), value.id);
-    repo.updateChapter(value.id, {
-      document: textToDocument(`${value.title}的验收正文，拖动后应完整保留。`),
-    });
-    repo.adoptChapter(value.id);
-  }
-  for (const title of ["发现来信", "决定启程"])
-    planning.savePlanning(
-      repo,
-      novel.id,
-      { level: "scene", parentId: c.id },
-      { title, content: `${title}的场景安排`, confirm: true },
-    );
-}
-const explore = repo.createProject({
-  title: "铁皮车的下一站 · 探索验收",
-  premise: "能操纵金属的旅人开车冒险，走一步看一步。",
-  mode: "explore",
-});
-const f = writing.createFragment(repo, explore.id);
-repo.updateChapter(f.id, {
-  title: "多年后的一次重逢",
-  document: textToDocument(
-    "铁皮车停在旧驿站前。他看见那盏许多年未曾亮起的灯。",
-  ),
-});
-const qaImage = repo.addImage({
-  id: crypto.randomUUID(),
-  projectId: null,
-  chapterId: null,
-  revisionId: null,
-  kind: "reference",
-  name: "共享参考图 · 先解除引用",
-  filename: "qa-shared.png",
-  prompt: "验收原始提示词",
-  model: "模拟模型",
-  referenceIds: [],
-  createdAt: new Date().toISOString(),
-});
-repo.saveCard({
-  projectId: novel.id,
-  kind: "character",
-  name: "修理师 · 图片引用验收",
-  description: "旅人",
-  constraints: "",
-  referenceIds: [qaImage.id],
-});
-repo.addImage({
-  ...qaImage,
-  id: crypto.randomUUID(),
-  name: "可清理的参考图",
-  filename: "qa-unused.png",
-});
+const repo = new StoryRepository(join(directory, "storybook.sqlite")),
+  api = workspaceHandlers(repo);
+const capabilities = {
+  vision: true,
+  contextTokens: 128000,
+  outputTokens: 8000,
+};
 const settings = {
   software: normalizeSoftware({}),
   text: {
     baseUrl: "http://mock.local/v1",
-    key: "",
+    key: "local-mock-only",
+    model: "模拟文字模型",
+    selectedModels: ["模拟文字模型", "模拟提炼模型"],
+    availableModels: ["模拟文字模型", "模拟提炼模型"],
+    capabilities: { 模拟文字模型: capabilities, 模拟提炼模型: capabilities },
     hasKey: true,
-    model: "本地验收模型",
-    selectedModels: ["本地验收模型"],
-    availableModels: ["本地验收模型"],
   },
   image: {
-    baseUrl: "",
-    key: "",
-    hasKey: false,
-    model: "",
-    selectedModels: [],
-    availableModels: [],
+    baseUrl: "http://mock.local/v1",
+    key: "local-mock-only",
+    model: "模拟插画模型",
+    selectedModels: ["模拟插画模型"],
+    availableModels: ["模拟插画模型"],
+    capabilities: {},
+    hasKey: true,
   },
   imageSize: "1024x1024",
   imageQuality: "auto",
-  dataDir: "内存数据库（验收专用）",
-  version: "0.3.3-qa",
+  dataDir: directory,
+  version: "重构验收",
 };
-const creationHandlers = creation.conversationHandlers(repo);
-let generation = 0;
+const libraryCard = repo.saveCard({
+  projectId: null,
+  kind: "world",
+  name: "雾港世界 · 资料库",
+  description: "雾夜才开放航线的港口。",
+  constraints: "只有持灯的船可以出航。",
+  sections: [
+    {
+      id: randomUUID(),
+      title: "航行规则",
+      content: "- 航线只在雾夜开放。",
+      sourceIds: [],
+    },
+  ],
+  referenceIds: [],
+});
+for (const mode of ["novel", "explore"]) {
+  const p = repo.createProject({
+    title: mode === "novel" ? "沙海来信 · 长篇验收" : "雾港书店 · 自由探索",
+    premise:
+      mode === "novel"
+        ? "修理师阿禾寻找消失的故乡，沙海里藏着一封迟到的信。"
+        : "只在雾夜营业的书店收到一封关于明天的来信。",
+    mode,
+    cardIds: [libraryCard.id],
+  });
+  repo.updateProject(p.id, {
+    world: "沙海规则：水源稀少，通信依靠驿站，不能凭空传送物品。",
+    style: "第三人称有限视角，以行动和细节表现情绪。",
+  });
+  const img = repo.addImage({
+    id: randomUUID(),
+    projectId: p.id,
+    chapterId: null,
+    revisionId: null,
+    kind: "reference",
+    name: "阿禾外观参考",
+    filename: "mock.png",
+    prompt: "",
+    referenceIds: [],
+    model: "mock",
+    createdAt: new Date().toISOString(),
+  });
+  repo.saveCard({
+    projectId: p.id,
+    kind: "character",
+    name: "阿禾",
+    description: "年轻修理师，灰色斗篷，习惯先检查门轴再推门。",
+    constraints: "不能读取他人思想；不轻易许诺。",
+    sections: [
+      {
+        id: randomUUID(),
+        title: "人物动机",
+        content: "找回故乡失联的消息。",
+        sourceIds: [],
+      },
+    ],
+    documents: [
+      {
+        id: randomUUID(),
+        name: "人物原始笔记.md",
+        content: "阿禾修理东西时会数呼吸，紧张时会摸左手袖口。",
+        enabled: true,
+      },
+    ],
+    referenceIds: [img.id],
+  });
+  const chapter = repo.getDetail(p.id).chapters[0];
+  repo.updateChapter(chapter.id, {
+    title: "第一章 · 风里的来信",
+    document: textToDocument(
+      "阿禾停在驿站门前，手指先摸过生锈的门轴。\n\n风从沙海深处吹来，把一封没有署名的信推到他的脚边。他弯下腰，发现信封边角干燥。\n\n“有人来过？”他问。柜台后的老人没有回答，只将一杯水推近了一些。",
+    ),
+  });
+  repo.adoptChapter(chapter.id);
+  const section = {
+    id: randomUUID(),
+    level: "section",
+    parentId: null,
+    chapterId: null,
+    title: mode === "novel" ? "全局约束与伏笔" : "近期方向与未定空间",
+    content:
+      "创作地基：先建立驿站日常与来信之谜；主角尚不知道来信者身份。结局可以保留空白。",
+  };
+  api["blueprint:save"]({ projectId: p.id, node: section, base: null });
+  if (mode === "novel") {
+    const volume = {
+      id: randomUUID(),
+      level: "volume",
+      parentId: null,
+      chapterId: null,
+      title: "第一卷 · 逆风",
+      content: "沿驿站路线寻找寄信者。",
+    };
+    api["blueprint:save"]({ projectId: p.id, node: volume, base: null });
+    api["blueprint:save"]({
+      projectId: p.id,
+      node: {
+        id: randomUUID(),
+        level: "chapter",
+        parentId: volume.id,
+        chapterId: chapter.id,
+        title: "第一章安排",
+        content: "在细节中呈现阿禾的谨慎；信封作为第一个异常。",
+      },
+      base: null,
+    });
+  }
+}
+const context = {
+  model: "模拟文字模型",
+  capabilities,
+  readImage: async () => png,
+};
+function response(r) {
+  const d = repo.getDetail(r.projectId);
+  if (r.kind === "brainstorm")
+    return "可以从“信封为什么没有沾沙”聊起：它可能刚被放下，也可能来自一个不会经历风沙的地方。你希望这件事先触动阿禾的好奇，还是他的戒心？这些都只是讨论中的可能性。";
+  if (r.kind === "settings") {
+    const c = d.cards.find((c) => c.id === r.cardId);
+    return JSON.stringify({
+      changes: c
+        ? [
+            {
+              type: "card",
+              cardId: c.id,
+              kind: c.kind,
+              name: c.name,
+              field: "constraints",
+              title: "",
+              content:
+                "不能读取他人思想；承诺之前会先核实情况。紧张时摸左手袖口。",
+            },
+          ]
+        : [
+            {
+              type: "project",
+              field: "world",
+              content: d.project.world + "\n远行者离开驿站前必须登记水量。",
+            },
+          ],
+    });
+  }
+  if (r.kind === "blueprint")
+    return JSON.stringify({
+      items: Array.from(
+        { length: r.target.id ? 1 : r.target.count },
+        (_, i) => ({
+          title: r.target.id
+            ? d.project.blueprint.nodes.find((n) => n.id === r.target.id).title
+            : "来信线索 " + (i + 1),
+          content:
+            "阿禾先核对信封纸张与驿站登记，再决定沿旧路线寻找寄信者。保留来信者身份，遵守上级规划。",
+        }),
+      ),
+    });
+  if (r.kind === "opening")
+    return "清晨的风绕过驿站，阿禾将最后一根门栓推回原位。\n\n柜台上多了一张地图，水渍恰好圈住一处早已废弃的地名。";
+  if (r.kind === "continue")
+    return "阿禾没有碰那杯水。他把信封翻了个面，借窗边的光辨认纸上的压痕。\n\n老人终于开口：“如果要走，等风停下来。”";
+  if (r.kind === "polish")
+    return "风贴着门缝滑进来，阿禾的手指在锈迹上停了一瞬。";
+  if (r.kind === "title") return JSON.stringify({ title: "风停之前" });
+  if (r.kind === "notes")
+    return JSON.stringify({
+      records: [
+        { kind: "fact", content: "阿禾在驿站收到一封没有署名、边角干燥的信。" },
+      ],
+    });
+  if (r.kind === "check") return '{"findings":[]}';
+  return "沙海边缘的旧驿站，年轻修理师身穿灰色斗篷，手持米白色信封，侧逆光，风沙与安静的室内形成层次，克制的叙事情绪。";
+}
+const jobs = new Map();
 handle = async (action, p) => {
-  if (creationHandlers[action]) return creationHandlers[action](p);
+  traces.push({
+    action,
+    kind: p?.kind,
+    mode: p?.mode,
+    time: new Date().toISOString(),
+  });
   if (action === "bootstrap")
     return {
       projects: repo.listProjects(),
@@ -217,204 +322,159 @@ handle = async (action, p) => {
       settings,
       roles: defaultRoleSettings(),
     };
-  if (action === "project:get") return repo.getDetail(p);
-  if (action === "project:update") {
-    const { id, ...patch } = p;
-    if (patch.blueprintCandidates)
-      patch.blueprintCandidates = creation.synchronizeCandidateEdits(
-        repo,
-        id,
-        patch.blueprintCandidates,
-      );
-    return repo.updateProject(id, patch);
+  const taskContext = (role) => ({
+    ...context,
+    model: resolveTextModel(
+      settings.text,
+      defaultRoleSettings(),
+      role,
+      p?.model,
+    ),
+  });
+  if (action === "card:refine")
+    return refineMaterial(p, {
+      prompt: "忠实提炼上传文档。",
+      capabilities,
+      generate: async (messages) => {
+        traces.push({
+          request: "card:refine",
+          model: taskContext("settings").model,
+          messages: messages.length,
+        });
+        return JSON.stringify({
+          description: "从文档提炼的人物资料。",
+          constraints: "忠实遵守人物原始规则。",
+          sections: [
+            { title: "原文要点", content: "- 从隔离资料导入的完整人物规则。" },
+          ],
+        });
+      },
+    });
+  if (action === "ai:preview")
+    return prepareTaskPreview(repo, p, taskContext(p.kind));
+  if (action === "ai:run") {
+    const controller = new AbortController();
+    jobs.set(p.requestId, controller);
+    try {
+      return await runCreationTask(repo, p, {
+        ...taskContext(p.kind),
+        signal: controller.signal,
+        progress: (e) => {
+          for (const client of clients)
+            client.write("data: " + JSON.stringify(e) + "\n\n");
+        },
+        generate: async (messages, delta) => {
+          const serialized = JSON.stringify(messages),
+            d = repo.getDetail(p.projectId);
+          for (const text of [
+            d.project.world,
+            d.project.style,
+            ...d.project.blueprint.nodes.map((n) => n.content),
+            ...d.cards.flatMap((c) => [
+              c.description,
+              c.constraints,
+              ...c.sections.map((s) => s.content),
+              ...c.documents.filter((x) => x.enabled).map((x) => x.content),
+            ]),
+          ])
+            if (text && !serialized.includes(JSON.stringify(text).slice(1, -1)))
+              throw Error("验收断言：缺少完整基础资料");
+          if (
+            d.cards.some((c) => c.referenceIds.length) &&
+            !serialized.includes('"type":"image_url"')
+          )
+            throw Error("验收断言：未实际发送参考图");
+          if (
+            p.kind === "brainstorm" &&
+            d.chapters.some(
+              (c) =>
+                c.content &&
+                serialized.includes(JSON.stringify(c.content).slice(1, -1)),
+            )
+          )
+            throw Error("验收断言：脑暴包含正文");
+          traces.push({
+            request: p.kind,
+            mode: p.mode,
+            images: (serialized.match(/image_url/g) || []).length,
+            messages: messages.length,
+          });
+          const text = response(p);
+          for (const part of text.match(/.{1,50}/gs) || []) {
+            if (controller.signal.aborted) throw Error("已停止");
+            delta(part);
+            await new Promise((r) => setTimeout(r, 8));
+          }
+          return text;
+        },
+      });
+    } finally {
+      jobs.delete(p.requestId);
+    }
   }
-  if (action === "project:create") return repo.createProject(p);
-  if (action === "project:export") return "验收导出已模拟";
-  if (action === "scratch:get") return repo.getSetting(`scratch.${p}`, null);
-  if (action === "scratch:save") {
-    repo.setSetting(`scratch.${p.projectId}`, p);
+  if (action === "ai:cancel") {
+    jobs.get(p)?.abort();
     return true;
   }
-  if (action === "chapter:update") {
-    const { id, ...patch } = p;
-    return repo.updateChapter(id, patch);
+  if (action === "project:create") return repo.createProject(p);
+  if (action === "project:delete") return repo.deleteArchivedProject(p);
+  if (action === "project:export") return "模拟导出，不写外部目录";
+  if (action === "settings:save") {
+    Object.assign(settings, p);
+    return settings;
   }
-  if (action === "chapter:create") return repo.createChapter(p);
-  if (action === "chapter:adopt") return repo.adoptChapter(p);
-  if (action === "chapter:checkpoint") return repo.checkpoint(p.id, p.label);
-  if (action === "chapter:revisions") return repo.listRevisions(p);
-  if (action === "chapter:restore") return repo.restoreRevision(p);
-  if (action === "chapter:delete")
-    return repo.deleteChapter(typeof p === "string" ? p : p.id);
-  if (action === "revision:usage") return repo.revisionUsage(p.projectId, p.id);
-  if (action === "revision:update")
-    return repo.manageRevision(p.projectId, p.id, p.label);
-  if (action === "revision:delete")
-    return repo.manageRevision(p.projectId, p.id);
-  if (action === "planning:version:update")
-    return planning.managePlanningVersion(
-      repo,
-      p.projectId,
-      p.versionId,
-      p.label,
-    );
-  if (action === "planning:version:delete")
-    return planning.managePlanningVersion(repo, p.projectId, p.versionId);
-  if (action === "planning:remove")
-    return planning.removePlanning(repo, p.projectId, p.target);
-  if (action === "chapter:reorder")
-    return writing.reorderChapters(repo, p.projectId, p.ids);
-  if (action === "fragment:create") return writing.createFragment(repo, p);
-  if (action === "fragment:incorporate")
-    return writing.incorporateFragment(repo, p.projectId, p.fragmentId, p);
-  if (action === "planning:save")
-    return planning.savePlanning(repo, p.projectId, p.target, p);
-  if (action === "planning:apply")
-    if (p.turnId)
-      return creation.applyConversationPlanning(
-        repo,
-        p.draft.projectId,
-        p.turnId,
-        p.selectedIds,
-      );
-    else
-      return {
-        detail: planning.applyPlanning(repo, p.draft, p.selectedIds),
-        base: planning.planningBase(repo, p.draft.projectId),
-      };
-  if (action === "planning:history") return planning.planningHistory(repo, p);
-  if (action === "planning:snapshot")
-    return planning.snapshotPlanning(repo, p, "手动版本");
-  if (action === "planning:restore")
-    return planning.restorePlanning(repo, p.projectId, p.versionId);
-  if (action === "planning:organize")
-    return planning.organizePlanning(
-      repo,
-      p.projectId,
-      p.chapterId,
-      p.volumeId,
-      p.sceneIds,
-    );
-  if (action === "planning:move:preview")
-    return planning.previewPlanningMove(repo, p.projectId, p);
-  if (action === "planning:move")
-    return planning.movePlanning(
-      repo,
-      p.projectId,
-      p,
-      p.base,
-      p.confirmNormalization,
-    );
-  if (action === "planning:acknowledge") {
-    const chapter = repo.getChapter(p.chapterId);
-    delete chapter.planningReview;
-    repo.db
-      .prepare("UPDATE chapters SET payload = ? WHERE id = ?")
-      .run(JSON.stringify(chapter), chapter.id);
-    return repo.getDetail(p.projectId);
+  if (action === "settings:software") {
+    settings.software = {
+      ...settings.software,
+      ...p,
+      appearance: { ...settings.software.appearance, ...p.appearance },
+    };
+    return settings.software;
   }
-  if (action === "memory:apply-generated")
-    return p.turnId
-      ? creation.applyConversationMemory(
-          repo,
-          repo.getChapter(p.chapterId).projectId,
-          p.turnId,
-        )
-      : repo.saveGeneratedMemories(p.chapterId, p.revisionId, p.records);
-  if (action === "story:apply-development")
-    return creation.applyConversationDevelopment(
-      repo,
-      p.projectId,
-      p.turnId,
-      p.selectedIds,
-    );
-  if (action === "story:undo-development")
-    return creation.undoConversationDevelopment(repo, p.projectId, p.undoId);
-  if (action === "card:save") return repo.saveCard(p);
-  if (action === "card:delete") return repo.deleteCard(p);
-  if (action === "memory:add")
-    return repo.addMemory(p.projectId, p.kind, p.content);
-  if (action === "memory:update")
-    return repo.updateMemory(p.projectId, p.id, p);
-  if (action === "memory:delete") return repo.deleteMemory(p.projectId, p.id);
-  if (action === "memory:toggle") return repo.setMemoryActive(p.id, p.active);
+  if (action === "settings:model") {
+    settings[p.kind].model = p.model;
+    return settings;
+  }
+  if (action === "roles:save") return p;
+  if (action.startsWith("window:")) return true;
+  if (action === "card:import")
+    return [
+      {
+        id: randomUUID(),
+        name: "验收原文.md",
+        content: "从隔离资料导入的完整人物规则。",
+        enabled: true,
+      },
+    ];
   if (action === "asset:usage") return repo.imageUsage(p);
   if (action === "asset:update") return repo.updateImage(p.id, p.name, p.notes);
-  if (action === "asset:delete") {
-    repo.deleteImage(p);
-    return { pendingCleanup: 0 };
-  }
-  if (action === "project:delete") return repo.deleteArchivedProject(p);
-  if (action === "roles:save") return p;
-  if (action === "ai:preview") {
-    const { built, omittedTurns } = creation.prepareConversationTask(repo, p);
-    return {
-      systemPrompt: built.messages[0].content,
-      context: built.messages[1].content,
-      coverage: built.coverage,
-      omitted: built.omitted,
-      model: settings.text.model,
-      messages: built.messages,
-      omittedTurns,
-    };
-  }
-  if (action === "ai:run") {
-    console.log(
-      `QA AI request: ${p.kind} ${p.projectId} ${p.planningTarget?.level ?? "prose"}`,
-    );
-    const version = ++generation;
-    let text;
-    if (p.planningTarget) {
-      const count =
-        p.planningTarget.id || p.planningTarget.level === "synopsis"
-          ? 1
-          : (p.planningTarget.count ?? 1);
-      text = JSON.stringify({
-        items: Array.from({ length: count }, (_, i) => ({
-          title: `沙海旅程 ${i + 1} · 第 ${version} 稿`,
-          content: `目标：寻找线索。行动：在第 ${i + 1} 个驿站与向导交谈。转折：发现来信中隐藏的印记。结束位置：决定沿旧公路继续前进。`,
-        })),
-      });
-    } else if (p.kind === "notes")
-      text = JSON.stringify({
-        records: [{ kind: "fact", content: `旅人来到驿站。审核稿 ${version}` }],
-      });
-    else if (p.kind === "develop")
-      text = JSON.stringify({
-        summary: `设定审核稿 ${version}`,
-        changes: [
-          {
-            target: "blueprint",
-            title: "下一站",
-            content: `旅人决定前往盐湖。版本 ${version}`,
-            mode: "append",
-            basis: "proposal",
-            sources: [],
-          },
-        ],
-        warnings: [],
-      });
-    else if (
-      p.outputMode === "analysis" ||
-      ["check", "pacing", "arc"].includes(p.kind)
-    )
-      text = `审核建议 ${version}：对白可以减少解释，用停顿和动作表达人物尚未说出的顾虑。`;
-    else
-      text = `风把沙粒推过门槛。修理师按住信封，在那枚褪色的印记上停了片刻。\n\n门外传来刹车声。他抬起头，看见向导正把一只空油桶从车上搬下来。\n\n（本地模拟第 ${version} 稿：${p.instruction || "按当前资料创作"}）`;
-    return creation.runCreationTask(repo, p, {
-      model: settings.text.model,
-      signal: new AbortController().signal,
-      generate: async (_messages, delta) => {
-        delta(text);
-        return text;
-      },
-      progress: () => {},
+  if (action === "asset:delete") return repo.deleteImage(p);
+  if (action === "asset:export") return "mock-export";
+  if (action === "asset:import" || action === "image:generate") {
+    const image = repo.addImage({
+      id: randomUUID(),
+      projectId: p.projectId,
+      chapterId: p.chapterId ?? null,
+      revisionId: null,
+      kind: action === "asset:import" ? "reference" : "illustration",
+      name: "本地模拟图片",
+      filename: "mock.png",
+      prompt: p.prompt ?? "",
+      referenceIds: p.referenceIds ?? [],
+      model: "模拟插画模型",
+      createdAt: new Date().toISOString(),
     });
+    return action === "asset:import" ? [image] : image;
   }
-  if (action.startsWith("window:") || action === "ai:cancel") return true;
-  throw new Error(`验收工具尚未模拟 ${action}`);
+  if (!api[action]) throw Error("验收未实现：" + action);
+  return api[action](p);
 };
 await server.listen();
-console.log(
-  `Isolated UI: http://127.0.0.1:5174\nNovel: /#/story/${novel.id}\nExplore: /#/story/${explore.id}`,
-);
+console.log("UI QA: http://127.0.0.1:5174 | isolated: " + directory);
+for (const sig of ["SIGINT", "SIGTERM"])
+  process.once(sig, async () => {
+    for (const c of clients) c.end();
+    await server.close();
+    repo.close();
+    process.exit(0);
+  });

@@ -1,7 +1,5 @@
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
+import type { ChatMessage } from "../shared/types";
+export type { ChatMessage } from "../shared/types";
 export interface Connection {
   baseUrl: string;
   model: string;
@@ -92,14 +90,19 @@ export async function consumeSSE(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "",
-    result = "";
+    result = "",
+    completed = false;
   const consume = (block: string) => {
     const data = block
       .split(/\r?\n/)
       .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trimStart())
       .join("\n");
-    if (!data || data === "[DONE]") return;
+    if (!data) return;
+    if (data === "[DONE]") {
+      completed = true;
+      return;
+    }
     let event;
     try {
       event = JSON.parse(data);
@@ -108,6 +111,14 @@ export async function consumeSSE(
     }
     if (event.error)
       throw new Error(String(event.error.message || "模型生成失败。"));
+    const reason = event.choices?.[0]?.finish_reason;
+    if (reason && reason !== "stop")
+      throw new Error(
+        "模型输出未完成（" +
+          reason +
+          "），不能采用，请调整输出预算后重新生成。",
+      );
+    if (reason === "stop") completed = true;
     const content = event.choices?.[0]?.delta?.content;
     if (typeof content === "string") {
       result += content;
@@ -131,6 +142,8 @@ export async function consumeSSE(
   } finally {
     reader.releaseLock();
   }
+  if (!completed)
+    throw new Error("模型连接在完成标记前中断，已保留收到的内容，不能采用。");
   return result;
 }
 export function validateConnection(config: Connection) {
@@ -143,6 +156,7 @@ export async function chat(
   messages: ChatMessage[],
   onDelta: (delta: string) => void,
   signal?: AbortSignal,
+  outputTokens?: number,
 ): Promise<string> {
   validateConnection(config);
   const response = await fetch(endpoint(config.baseUrl, "chat/completions"), {
@@ -151,7 +165,12 @@ export async function chat(
       Authorization: `Bearer ${config.key}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model: config.model, messages, stream: true }),
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      stream: true,
+      ...(outputTokens ? { max_tokens: outputTokens } : {}),
+    }),
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(600_000)])
       : AbortSignal.timeout(600_000),
@@ -165,10 +184,12 @@ export async function chat(
     return result;
   }
   const data = (await response.json()) as {
-    choices?: { message?: { content?: string } }[];
+    choices?: { message?: { content?: string }; finish_reason?: string }[];
     error?: { message?: string };
   };
   if (data.error) throw new Error(data.error.message || "模型调用失败。");
+  if (data.choices?.[0]?.finish_reason !== "stop")
+    throw new Error("模型输出未完成，不能采用，请重新生成。");
   const text = data.choices?.[0]?.message?.content;
   if (typeof text !== "string" || !text.trim())
     throw new Error("接口响应中没有文字内容。请检查服务是否兼容聊天接口。");

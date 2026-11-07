@@ -26,6 +26,7 @@ const form = ref<SettingsInput>({
     selectedModels: [...store.settings!.text.selectedModels],
     availableModels: [...store.settings!.text.availableModels],
     key: store.settings!.text.key,
+    capabilities: JSON.parse(JSON.stringify(store.settings!.text.capabilities)),
   },
   image: {
     baseUrl: store.settings!.image.baseUrl,
@@ -33,6 +34,9 @@ const form = ref<SettingsInput>({
     selectedModels: [...store.settings!.image.selectedModels],
     availableModels: [...store.settings!.image.availableModels],
     key: store.settings!.image.key,
+    capabilities: JSON.parse(
+      JSON.stringify(store.settings!.image.capabilities),
+    ),
   },
   imageSize: store.settings!.imageSize,
   imageQuality: store.settings!.imageQuality,

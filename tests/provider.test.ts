@@ -28,6 +28,65 @@ async function server(handler: RequestListener) {
   return `http://127.0.0.1:${address.port}/v1`;
 }
 describe("兼容接口", () => {
+  it.each(["missing", "length", "content_filter"])(
+    "流式输出 %s 时不当作完成",
+    async (reason) => {
+      const text =
+        "data: " +
+        JSON.stringify({
+          choices: [
+            {
+              delta: { content: "部分正文" },
+              ...(reason === "missing" ? {} : { finish_reason: reason }),
+            },
+          ],
+        }) +
+        "\n\n";
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode(text));
+          c.close();
+        },
+      });
+      await expect(consumeSSE(stream, () => {})).rejects.toThrow(/未完成|中断/);
+    },
+  );
+  it("多模态图片实际出现在 HTTP 载荷，输出遵守配置上限", async () => {
+    let actual: any;
+    const url = await server(async (req, res) => {
+      let text = "";
+      for await (const c of req) text += c;
+      actual = JSON.parse(text);
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { content: "完成" }, finish_reason: "stop" }],
+        }),
+      );
+    });
+    await chat(
+      { baseUrl: url, model: "mock-vision", key: "test-only" },
+      [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "人物参考" },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,aW1hZ2U=" },
+            },
+          ],
+        },
+      ],
+      () => {},
+      undefined,
+      8192,
+    );
+    expect(actual.messages[0].content[1].image_url.url).toBe(
+      "data:image/png;base64,aW1hZ2U=",
+    );
+    expect(actual.max_tokens).toBe(8192);
+  });
   it("规范化基础地址与完整端点，保留代理查询参数", () => {
     expect(endpoint("https://example.test/v1/", "chat/completions")).toBe(
       "https://example.test/v1/chat/completions",
@@ -124,7 +183,11 @@ describe("兼容接口", () => {
       });
       res.setHeader("Content-Type", "application/json");
       res.end(
-        JSON.stringify({ choices: [{ message: { content: "连接成功" } }] }),
+        JSON.stringify({
+          choices: [
+            { message: { content: "连接成功" }, finish_reason: "stop" },
+          ],
+        }),
       );
     });
     expect(

@@ -18,15 +18,13 @@ const groups = [
   })),
   {
     name: "资料导入与章节命名",
-    roles: roleDefinitions.filter(
-      (r) => r.id === "material" || r.id === "title",
-    ),
+    roles: roleDefinitions.filter((r) => r.id === "title"),
   },
 ];
 const store = useWorkspace(),
   route = useRoute();
 const form = ref<RoleSettings>(JSON.parse(JSON.stringify(store.roles)));
-const selected = ref<RoleId>("organize"),
+const selected = ref<RoleId>("brainstorm"),
   saving = ref(false);
 const current = computed(() =>
   form.value.roles.find((role) => role.id === selected.value)!,
@@ -147,11 +145,6 @@ async function save() {
           :maxlength="20000"
           :disabled="saving"
         />
-        <div v-if="definition.contract" class="role-contract">
-          <strong>软件读取的输出格式</strong>
-          <p>此段由软件附加，用于读取结果；上方工作要求可自由修改。</p>
-          <pre>{{ definition.contract }}</pre>
-        </div>
         <NCollapse class="role-preview"
           ><NCollapseItem title="查看完整系统提示词" name="effective">
             <pre class="effective-prompt">{{ preview }}</pre>

@@ -81,43 +81,28 @@ async function sample() {
         "一座经常起雾的海边小城。旧书店名为「第十三页」，晚上八点开门，凌晨两点打烊。这里偶尔发生难以解释的小事，但生活仍按自己的节奏继续。",
       style:
         "第三人称有限视角，跟随林屿。对白克制，以动作与细节表达情绪。让悬疑自然地藏在日常里。",
-      blueprintSections: [
-        {
-          id: "core-conflict",
-          title: "核心冲突",
-          content:
-            "一、陌生的来信：林屿收到一封写着明日天气的信。\n二、迟到的客人：信里提到的人走进书店。\n三、没有寄出的回信：林屿决定试着给未知的人回复。\n\n后续保持开放，探索来信与林屿过去的关系。",
-        },
-        {
-          id: "character-arcs",
-          title: "角色弧线",
-          content: "林屿从回避过去，逐步学会回应未知来信与真实关系。",
-        },
-        {
-          id: "story-phases",
-          title: "阶段推进",
-          content: "先建立书店日常，再让来信逐渐触及林屿的过去。",
-        },
-        {
-          id: "foreshadowing",
-          title: "伏笔",
-          content: "无风时响起的风铃；信封边角干燥。",
-        },
-        {
-          id: "open-questions",
-          title: "待确认事项",
-          content: "来信者的身份与来信机制保持开放。",
-        },
-      ],
     });
     store.editChapter({
       title: "第一章 · 雾把门推开",
-      plan: "建立书店与林屿的日常。让第一封信出现，以一个细小但不寻常的细节结束。",
+
       document: textToDocument(
         "海雾抵达书店的时候，墙上的钟刚好走过八点。\n\n林屿把门口的木牌翻过来，露出「营业中」三个字。木牌底下还挂着一串旧风铃，今天没有风，它却轻轻响了一声。\n\n他停了停，低头看向门缝。\n\n一只米白色的信封躺在那里，边角干燥，仿佛从来没有穿过这条湿漉漉的街。信封上没有地址，只有一行细小的字。\n\n——明天，请晚十分钟关门。",
       ),
     });
     await store.flush();
+    await store.api("blueprint:save", {
+      projectId: p.id,
+      node: {
+        id: crypto.randomUUID(),
+        level: "section",
+        parentId: null,
+        chapterId: null,
+        title: "近期方向",
+        content:
+          "建立书店与林屿的日常，让第一封信出现。来信机制与身份保持开放。",
+      },
+      base: null,
+    });
     await router.push("/story/" + p.id);
   });
 }

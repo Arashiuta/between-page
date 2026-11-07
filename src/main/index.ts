@@ -25,54 +25,25 @@ import { assertDataLayoutSupported } from "./data-layout";
 import { createProjectWithCover, saveCover } from "./covers";
 import { coverUploadSchema, coverCropSchema } from "../shared/cover";
 import { chat, generateImage, listModels, type Connection } from "./provider";
-import { buildChapterTitleMessages, parseChapterTitle } from "./chapter-title";
+
 import {
   importTextDocument,
-  buildMaterialMessages,
-  parseMaterialDraft,
+  refineMaterial,
+  refineMaterialSchema,
 } from "./materials";
 import { roleSettings } from "./roles";
-import { effectiveRole, roleDefinitions } from "../shared/roles";
+import { rolePrompt, roleDefinitions } from "../shared/roles";
+import { resolveTextModel } from "../shared/models";
 import { materialLimits } from "../shared/materials";
-import { builtinWorkflowTemplates } from "../shared/workflows";
+import { prepareReferenceImage } from "./reference-images";
 import { taskKinds } from "../shared/types";
-import { developmentDraftSchema } from "../shared/development";
-import { applyDevelopment } from "./development";
-import {
-  planningTargetSchema,
-  planningDraftSchema,
-  planningBase,
-  savePlanning,
-  applyPlanning,
-  planningHistory,
-  snapshotPlanning,
-  restorePlanning,
-  organizePlanning,
-  removePlanning,
-  managePlanningVersion,
-  planningMoveSchema,
-  previewPlanningMove,
-  movePlanning,
-} from "./planning";
-import {
-  createFragment,
-  incorporateFragment,
-  reorderChapters,
-  exportStory,
-} from "./writing";
+import { exportStory } from "./writing";
+import { workspaceHandlers } from "./workspace-handlers";
+import { requestSchema } from "../shared/requests";
+import { defaultCapabilities } from "../shared/tools";
 import appIcon from "../../build/icon.png?asset";
 import trayIcon from "../../build/icon.ico?asset";
-import {
-  conversationHandlers,
-  runCreationTask,
-  prepareConversationTask,
-  applyConversationPlanning,
-  applyConversationDevelopment,
-  applyConversationMemory,
-  synchronizeCandidateEdits,
-  undoConversationDevelopment,
-} from "./conversations";
-import { textSelectionSchema } from "../shared/conversations";
+import { runCreationTask, prepareTaskPreview } from "./conversations";
 import {
   resolveDataDir,
   initializeDirectories,
@@ -86,15 +57,10 @@ import {
   migrateData,
 } from "./storage";
 import type {
-  Card,
   ImageAsset,
   TaskRequest,
-  DocumentNode,
   RoleId,
   RoleSettings,
-  BlueprintSection,
-  WorkflowRun,
-  WorkflowTemplate,
 } from "../shared/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -123,88 +89,39 @@ let activeOperations = 0;
 const idSchema = z.string().uuid();
 const shortText = z.string().max(500);
 const longText = z.string().max(200_000);
-const kindSchema = z.enum(["character", "world", "inspiration"]);
-const taskKindSchema = z.enum(taskKinds);
-const roleIdSchema = z.enum([...taskKinds, "material", "title"]);
+const roleIdSchema = z.enum(taskKinds);
 const freedomSchema = z.enum(["guided", "balanced", "free"]);
-const sourceDocumentSchema = z.object({
-  id: idSchema,
-  name: shortText.trim().min(1),
-  content: z.string().max(materialLimits.document),
-  enabled: z.boolean(),
-});
-const cardSectionSchema = z.object({
-  id: idSchema,
-  title: z.string().trim().min(1).max(200),
-  content: longText,
-  alwaysInclude: z.boolean(),
-  sourceIds: z.array(idSchema).max(12),
-});
-const cardContentSchema = z.object({
-  name: shortText.trim(),
-  kind: kindSchema,
-  description: longText,
-  constraints: longText,
-  sections: z.array(cardSectionSchema).max(materialLimits.sections).default([]),
-  documents: z
-    .array(sourceDocumentSchema)
-    .max(materialLimits.documents)
-    .default([]),
-});
-const memoryKindSchema = z.enum([
-  "fact",
-  "state",
-  "relationship",
-  "knowledge",
-  "foreshadow",
-  "summary",
-]);
-const documentSchema: z.ZodType<DocumentNode> = z.lazy(() =>
-  z.object({
-    type: z.string().max(40),
-    text: z.string().max(500_000).optional(),
-    content: z.array(documentSchema).max(10_000).optional(),
-    attrs: z.record(z.string(), z.unknown()).optional(),
-    marks: z
-      .array(
-        z.object({
-          type: z.string(),
-          attrs: z.record(z.string(), z.unknown()).optional(),
-        }),
-      )
-      .optional(),
-  }),
-);
 const connection = (kind: "text" | "image"): Connection => ({
   ...settings(repo, dataDir)[kind],
   key: readKey(repo, kind),
 });
-function connectionForRole(id: RoleId): Connection {
+function connectionForRole(id: RoleId, override?: string): Connection {
   const config = connection("text");
-  const model = effectiveRole(roleSettings(repo), id).model;
-  if (model && !settings(repo, dataDir).text.selectedModels.includes(model))
-    throw new Error(
-      "此 AI 职责指定的模型已不在已选列表中，请到「AI 职责」修改模型，或在设置中重新勾选。",
-    );
-  return { ...config, model: model || config.model };
+  return {
+    ...config,
+    model: resolveTextModel(
+      settings(repo, dataDir).text,
+      roleSettings(repo),
+      id,
+      override,
+    ),
+  };
 }
-const taskSchema = z.object({
-  requestId: idSchema,
-  kind: taskKindSchema,
-  projectId: idSchema,
-  chapterId: idSchema.optional(),
-  instruction: longText,
-  selection: longText.optional(),
-  workflowContext: z.string().max(80_000).optional(),
-  planningTarget: planningTargetSchema.optional(),
-  writingScope: z.enum(["selection", "document"]).optional(),
-  outputMode: z.enum(["rewrite", "analysis"]).optional(),
-  usePlanDraft: z.boolean().optional(),
-  referenceNovelPlan: z.boolean().optional(),
-  conversationId: idSchema.optional(),
-  parentTurnId: idSchema.optional(),
-  selectionRange: textSelectionSchema.optional(),
-});
+function contextOptions(id: RoleId, override?: string) {
+  const config = connectionForRole(id, override);
+  const capabilities =
+    settings(repo, dataDir).text.capabilities[config.model] ??
+    defaultCapabilities();
+  return {
+    model: config.model,
+    capabilities,
+    readImage: async (imageId: string, maxBytes: number) => {
+      const image = repo.getImage(imageId);
+      const bytes = await readAsset(dataDir, image.filename);
+      return prepareReferenceImage(bytes, maxBytes);
+    },
+  };
+}
 function assertIdle() {
   if (jobs.size) throw new Error("请先停止或等待当前生成任务完成。");
   if (activeOperations > 1)
@@ -222,59 +139,6 @@ const handlers: Record<
     settings: settings(repo, dataDir),
     roles: roleSettings(repo),
   }),
-  "project:get": (p) => repo.getDetail(idSchema.parse(p)),
-  "scratch:get": (p) => {
-    const id = idSchema.parse(p);
-    repo.getProject(id);
-    return repo.getSetting("scratch." + id, null);
-  },
-  "scratch:save": (p) => {
-    const v = z
-      .object({
-        projectId: idSchema,
-        kind: taskKindSchema,
-        instruction: longText,
-        output: z.string().max(1_000_000),
-        chapterId: z.string().max(40),
-        memoryRecords: z
-          .array(
-            z.object({ kind: memoryKindSchema, content: z.string().max(3000) }),
-          )
-          .max(24)
-          .nullable()
-          .optional(),
-        memoryRevisionId: idSchema.or(z.literal("")).optional(),
-        developmentDraft: developmentDraftSchema.nullable().optional(),
-        planningDraft: planningDraftSchema.nullable().optional(),
-        resultType: z
-          .enum(["prose", "rewrite", "analysis", "planning"])
-          .nullable()
-          .optional(),
-        sourceContent: z.string().max(1_000_000).optional(),
-        outputScope: z.enum(["selection", "document"]).nullable().optional(),
-        planningTarget: planningTargetSchema.optional(),
-        writingScope: z.enum(["selection", "document"]).optional(),
-        outputMode: z.enum(["rewrite", "analysis"]).optional(),
-        usePlanDraft: z.boolean().optional(),
-        referenceNovelPlan: z.boolean().optional(),
-        selectedTool: taskKindSchema.optional(),
-        developmentUndoId: idSchema.or(z.literal("")).optional(),
-        outputSelection: z
-          .object({
-            text: z.string().max(500_000),
-            from: z.number().int().min(0),
-            to: z.number().int().min(0),
-          })
-          .nullable()
-          .optional(),
-        conversationId: idSchema.optional(),
-        selectedTurnId: idSchema.optional(),
-      })
-      .parse(p);
-    repo.getProject(v.projectId);
-    repo.setSetting("scratch." + v.projectId, v);
-    return true;
-  },
   "project:create": (p) =>
     createProjectWithCover(
       repo,
@@ -305,56 +169,6 @@ const handlers: Record<
   },
   "project:cover:remove": (p) =>
     saveCover(repo, dataDir, idSchema.parse(p), null),
-  "project:update": (p) => {
-    const { id, ...patch } = z
-      .object({
-        id: idSchema,
-        title: shortText.trim().min(1).optional(),
-        premise: longText.optional(),
-        mode: z.enum(["explore", "novel"]).optional(),
-        creativeFreedom: freedomSchema.optional(),
-        genre: shortText.optional(),
-        world: longText.optional(),
-        style: longText.optional(),
-        outline: longText.optional(),
-        blueprintSections: z
-          .array(
-            z.object({
-              id: z.string().min(1).max(80),
-              title: shortText.trim().min(1),
-              content: longText,
-            }),
-          )
-          .max(50)
-          .optional(),
-        blueprintCandidates: z
-          .array(
-            z.object({
-              id: idSchema,
-              title: shortText.trim().min(1),
-              content: z.string().max(1_000_000),
-              source: taskKindSchema,
-              createdAt: z.string().max(40),
-              development: developmentDraftSchema.optional(),
-              conversationId: idSchema.optional(),
-              turnId: idSchema.optional(),
-            }),
-          )
-          .max(100)
-          .optional(),
-        archived: z.boolean().optional(),
-      })
-      .parse(p);
-    return repo.db.transaction(() => {
-      if (patch.blueprintCandidates)
-        patch.blueprintCandidates = synchronizeCandidateEdits(
-          repo,
-          id,
-          patch.blueprintCandidates,
-        );
-      return repo.updateProject(id, patch);
-    })();
-  },
   "project:delete": async (p) => {
     assertIdle();
     const filenames = repo.deleteArchivedProject(idSchema.parse(p));
@@ -367,315 +181,6 @@ const handlers: Record<
     );
     return true;
   },
-  "workflow:templates:get": () => [
-    ...builtinWorkflowTemplates,
-    ...repo.listWorkflowTemplates(),
-  ],
-  "workflow:templates:save": (p) => {
-    const templates = z
-      .array(
-        z.object({
-          id: z.string().min(1).max(100),
-          name: shortText.trim().min(1),
-          description: z.string().max(2000),
-          builtin: z.boolean().optional(),
-          steps: z
-            .array(
-              z.object({
-                id: z.string().min(1).max(100),
-                kind: taskKindSchema,
-                title: shortText.trim().min(1),
-                instruction: longText,
-              }),
-            )
-            .min(1)
-            .max(20),
-        }),
-      )
-      .max(100)
-      .parse(p) as WorkflowTemplate[];
-    return repo.saveWorkflowTemplates(
-      templates.filter((template) => !template.builtin),
-    );
-  },
-  "workflow:runs:get": (p) => repo.listWorkflowRuns(idSchema.parse(p)),
-  "workflow:run:save": (p) => {
-    const run = z
-      .object({
-        id: idSchema,
-        projectId: idSchema,
-        templateId: z.string().max(100),
-        templateName: shortText,
-        chapterId: z.string().max(40),
-        steps: z
-          .array(
-            z.object({
-              id: z.string().max(100),
-              kind: taskKindSchema,
-              title: shortText,
-              instruction: longText,
-            }),
-          )
-          .min(1)
-          .max(20),
-        results: z
-          .array(
-            z.object({
-              stepId: z.string().max(100),
-              status: z.enum(["pending", "approved", "skipped"]),
-              output: z.string().max(1_000_000),
-              updatedAt: z.string().max(40),
-              memoryRecords: z
-                .array(
-                  z.object({
-                    kind: memoryKindSchema,
-                    content: z.string().max(3000),
-                  }),
-                )
-                .max(24)
-                .optional(),
-              memoryRevisionId: idSchema.optional(),
-              applied: z.boolean().optional(),
-              outputSelection: z
-                .object({
-                  text: z.string().max(500_000),
-                  from: z.number().int().min(0),
-                  to: z.number().int().min(0),
-                })
-                .nullable()
-                .optional(),
-            }),
-          )
-          .max(20),
-        currentStep: z.number().int().min(0).max(20),
-        createdAt: z.string().max(40),
-        updatedAt: z.string().max(40),
-      })
-      .parse(p) as WorkflowRun;
-    return repo.saveWorkflowRun(run);
-  },
-  "chapter:create": (p) => repo.createChapter(idSchema.parse(p)),
-  "fragment:create": (p) => createFragment(repo, idSchema.parse(p)),
-  "fragment:incorporate": (p) => {
-    assertIdle();
-    const v = z
-      .object({
-        projectId: idSchema,
-        fragmentId: idSchema,
-        chapterId: idSchema.optional(),
-        beforeId: idSchema.optional(),
-        allowRepeat: z.boolean().optional(),
-      })
-      .parse(p);
-    return incorporateFragment(repo, v.projectId, v.fragmentId, v);
-  },
-  "chapter:reorder": (p) => {
-    assertIdle();
-    const v = z
-      .object({ projectId: idSchema, ids: z.array(idSchema) })
-      .parse(p);
-    return reorderChapters(repo, v.projectId, v.ids);
-  },
-  "planning:save": (p) => {
-    const v = z
-      .object({
-        projectId: idSchema,
-        target: planningTargetSchema,
-        content: longText,
-        title: shortText.optional(),
-        confirm: z.boolean().optional(),
-      })
-      .parse(p);
-    return savePlanning(repo, v.projectId, v.target, v);
-  },
-  "planning:apply": (p) => {
-    const v = z
-      .object({
-        draft: planningDraftSchema,
-        selectedIds: z.array(idSchema).min(1).max(30),
-        turnId: idSchema.optional(),
-      })
-      .parse(p);
-    if (v.turnId)
-      return applyConversationPlanning(
-        repo,
-        v.draft.projectId,
-        v.turnId,
-        v.selectedIds,
-      );
-    const detail = applyPlanning(repo, v.draft, v.selectedIds);
-    return { detail, base: planningBase(repo, v.draft.projectId) };
-  },
-  "planning:history": (p) => planningHistory(repo, idSchema.parse(p)),
-  "planning:remove": (p) => {
-    assertIdle();
-    const v = z
-      .object({ projectId: idSchema, target: planningTargetSchema })
-      .parse(p);
-    return removePlanning(repo, v.projectId, v.target);
-  },
-  "planning:version:update": (p) => {
-    const v = z
-      .object({
-        projectId: idSchema,
-        versionId: idSchema,
-        label: shortText.trim().min(1),
-      })
-      .parse(p);
-    return managePlanningVersion(repo, v.projectId, v.versionId, v.label);
-  },
-  "planning:version:delete": (p) => {
-    assertIdle();
-    const v = z.object({ projectId: idSchema, versionId: idSchema }).parse(p);
-    return managePlanningVersion(repo, v.projectId, v.versionId);
-  },
-  "planning:snapshot": (p) =>
-    snapshotPlanning(repo, idSchema.parse(p), "手动保存规划版本"),
-  "planning:restore": (p) => {
-    const v = z.object({ projectId: idSchema, versionId: idSchema }).parse(p);
-    return restorePlanning(repo, v.projectId, v.versionId);
-  },
-  "planning:organize": (p) => {
-    assertIdle();
-    const v = z
-      .object({
-        projectId: idSchema,
-        chapterId: idSchema,
-        volumeId: idSchema.nullable(),
-        sceneIds: z.array(idSchema).optional(),
-      })
-      .parse(p);
-    return organizePlanning(
-      repo,
-      v.projectId,
-      v.chapterId,
-      v.volumeId,
-      v.sceneIds,
-    );
-  },
-  "planning:move:preview": (p) => {
-    assertIdle();
-    const v = planningMoveSchema.parse(p);
-    return previewPlanningMove(repo, v.projectId, v);
-  },
-  "planning:move": (p) => {
-    assertIdle();
-    const v = planningMoveSchema
-      .extend({
-        base: z.string().length(64),
-        confirmNormalization: z.boolean().optional(),
-      })
-      .parse(p);
-    return movePlanning(repo, v.projectId, v, v.base, v.confirmNormalization);
-  },
-  "planning:acknowledge": (p) => {
-    const v = z.object({ projectId: idSchema, chapterId: idSchema }).parse(p);
-    const c = repo
-      .getDetail(v.projectId)
-      .chapters.find((c) => c.id === v.chapterId);
-    if (!c) throw new Error("章节不属于当前故事。");
-    delete c.planningReview;
-    repo.db
-      .prepare("UPDATE chapters SET payload = ? WHERE id = ?")
-      .run(JSON.stringify(c), c.id);
-    return repo.getDetail(v.projectId);
-  },
-  "story:apply-development": (p) => {
-    const value = z
-      .object({
-        projectId: idSchema,
-        draft: developmentDraftSchema,
-        selectedIds: z.array(idSchema).min(1).max(30),
-        turnId: idSchema.optional(),
-      })
-      .parse(p);
-    if (value.turnId)
-      return applyConversationDevelopment(
-        repo,
-        value.projectId,
-        value.turnId,
-        value.selectedIds,
-      );
-    return applyDevelopment(
-      repo,
-      value.projectId,
-      value.draft,
-      value.selectedIds,
-    );
-  },
-  "story:undo-development": (p) => {
-    const value = z.object({ projectId: idSchema, undoId: idSchema }).parse(p);
-    return undoConversationDevelopment(repo, value.projectId, value.undoId);
-  },
-  "chapter:delete": (p) => {
-    assertIdle();
-    if (typeof p === "string") return repo.deleteChapter(idSchema.parse(p));
-    const v = z.object({ id: idSchema, projectId: idSchema }).parse(p);
-    if (repo.getChapter(v.id).projectId !== v.projectId)
-      throw new Error("章节或片段不属于当前故事。");
-    return repo.deleteChapter(v.id);
-  },
-  "chapter:update": (p) => {
-    if (JSON.stringify(p).length > 2_000_000)
-      throw new Error("单章内容过大，请拆分为多个章节。");
-    const { id, ...patch } = z
-      .object({
-        id: idSchema,
-        title: shortText.trim().min(1).optional(),
-        plan: longText.optional(),
-        document: documentSchema.optional(),
-        fragmentContext: z
-          .object({
-            time: shortText,
-            place: shortText,
-            viewpoint: shortText,
-            connection: longText,
-            anchorId: idSchema.optional(),
-          })
-          .optional(),
-      })
-      .parse(p);
-    return repo.updateChapter(id, patch);
-  },
-  "chapter:adopt": (p) => repo.adoptChapter(idSchema.parse(p)),
-  "chapter:checkpoint": (p) => {
-    const v = z.object({ id: idSchema, label: shortText.optional() }).parse(p);
-    return repo.checkpoint(v.id, v.label);
-  },
-  "chapter:revisions": (p) => repo.listRevisions(idSchema.parse(p)),
-  "revision:usage": (p) => {
-    const v = z.object({ projectId: idSchema, id: idSchema }).parse(p);
-    return repo.revisionUsage(v.projectId, v.id);
-  },
-  "revision:update": (p) => {
-    const v = z
-      .object({
-        projectId: idSchema,
-        id: idSchema,
-        label: shortText.trim().min(1),
-      })
-      .parse(p);
-    return repo.manageRevision(v.projectId, v.id, v.label);
-  },
-  "revision:delete": (p) => {
-    assertIdle();
-    const v = z.object({ projectId: idSchema, id: idSchema }).parse(p);
-    return repo.manageRevision(v.projectId, v.id);
-  },
-  "chapter:restore": (p) => repo.restoreRevision(idSchema.parse(p)),
-  "card:save": (p) => {
-    const card = cardContentSchema
-      .extend({
-        id: idSchema.optional(),
-        projectId: idSchema.nullable(),
-        name: shortText.trim().min(1),
-        referenceIds: z.array(idSchema).max(12),
-      })
-      .parse(p);
-    for (const ref of card.referenceIds) repo.getImage(ref);
-    return repo.saveCard(card);
-  },
-  "card:delete": (p) => repo.deleteCard(idSchema.parse(p)),
   "card:import": async () => {
     const result = await dialog.showOpenDialog({
       title: "导入设定文档",
@@ -693,37 +198,28 @@ const handlers: Record<
     }
     return documents;
   },
-  "card:organize": async (p) => {
-    const { requestId, instruction, card } = z
-      .object({
-        requestId: idSchema,
-        instruction: longText,
-        card: cardContentSchema,
-      })
-      .parse(p);
-    if (jobs.has(requestId)) throw new Error("任务已经开始。");
-    const messages = buildMaterialMessages(
-      roleSettings(repo),
-      { ...card, projectId: null, referenceIds: [] },
-      instruction,
-    );
+  "card:refine": async (p) => {
+    const value = refineMaterialSchema.parse(p);
+    if (jobs.has(value.requestId)) throw new Error("任务已经开始。");
     const controller = new AbortController();
-    jobs.set(requestId, controller);
+    jobs.set(value.requestId, controller);
     try {
-      const output = await chat(
-        connectionForRole("material"),
-        messages,
-        () => {},
-        controller.signal,
-      );
-      if (controller.signal.aborted)
-        throw new Error("整理已停止，现有资料和原始文档已保留。");
-      return parseMaterialDraft(
-        output,
-        card.documents.filter((doc) => doc.enabled).map((doc) => doc.id),
-      );
+      const config = connectionForRole("settings", value.model);
+      const opts = contextOptions("settings", value.model);
+      return await refineMaterial(value, {
+        prompt: rolePrompt(roleSettings(repo), "settings"),
+        capabilities: opts.capabilities,
+        generate: (messages) =>
+          chat(
+            config,
+            messages,
+            () => {},
+            controller.signal,
+            opts.capabilities.outputTokens,
+          ),
+      });
     } finally {
-      jobs.delete(requestId);
+      jobs.delete(value.requestId);
     }
   },
   "roles:save": (p) => {
@@ -754,54 +250,13 @@ const handlers: Record<
     repo.setSetting("ai.roles", value);
     return roleSettings(repo);
   },
-  "ai:preview": (p) => {
-    const request = taskSchema.parse(p);
-    const { built, omittedTurns } = prepareConversationTask(repo, request);
-    return {
-      systemPrompt: built.messages[0].content,
-      context: built.messages[1].content,
-      model: connectionForRole(request.kind).model,
-      coverage: built.coverage,
-      omitted: built.omitted,
-      messages: built.messages,
-      omittedTurns,
-    };
-  },
-  "card:copy": (p) => {
-    const v = z
-      .object({ id: idSchema, projectId: idSchema.nullable() })
-      .parse(p);
-    return repo.copyCard(v.id, v.projectId);
-  },
-  "memory:add": (p) => {
-    const v = z
-      .object({
-        projectId: idSchema,
-        kind: memoryKindSchema,
-        content: longText.trim().min(1),
-      })
-      .parse(p);
-    return repo.addMemory(v.projectId, v.kind, v.content);
-  },
-  "memory:toggle": (p) => {
-    const v = z.object({ id: idSchema, active: z.boolean() }).parse(p);
-    return repo.setMemoryActive(v.id, v.active);
-  },
-  "memory:update": (p) => {
-    const v = z
-      .object({
-        projectId: idSchema,
-        id: idSchema,
-        kind: memoryKindSchema,
-        content: longText.trim().min(1),
-      })
-      .parse(p);
-    return repo.updateMemory(v.projectId, v.id, v);
-  },
-  "memory:delete": (p) => {
-    assertIdle();
-    const v = z.object({ projectId: idSchema, id: idSchema }).parse(p);
-    return repo.deleteMemory(v.projectId, v.id);
+  "ai:preview": async (p) => {
+    const request = requestSchema.parse(p) as TaskRequest;
+    return prepareTaskPreview(
+      repo,
+      request,
+      contextOptions(request.kind, request.model),
+    );
   },
   "asset:usage": (p) => repo.imageUsage(idSchema.parse(p)),
   "asset:update": (p) => {
@@ -818,35 +273,6 @@ const handlers: Record<
     assertIdle();
     repo.deleteImage(idSchema.parse(p));
     return { pendingCleanup: await cleanupDeletedAssets(repo, dataDir) };
-  },
-  "memory:apply-generated": (p) => {
-    const value = z
-      .object({
-        chapterId: idSchema,
-        revisionId: idSchema,
-        turnId: idSchema.optional(),
-        records: z
-          .array(
-            z.object({
-              kind: memoryKindSchema,
-              content: z.string().trim().min(1).max(3000),
-            }),
-          )
-          .min(1)
-          .max(24),
-      })
-      .parse(p);
-    if (value.turnId)
-      return applyConversationMemory(
-        repo,
-        repo.getChapter(value.chapterId).projectId,
-        value.turnId,
-      );
-    return repo.saveGeneratedMemories(
-      value.chapterId,
-      value.revisionId,
-      value.records,
-    );
   },
   "settings:save": (p) => saveSettings(repo, dataDir, p),
   "settings:software": (p) => saveSoftwareSettings(repo, p),
@@ -890,43 +316,25 @@ const handlers: Record<
     );
     return output.slice(0, 200);
   },
-  "ai:chapter-title": async (p) => {
-    const request = z
-      .object({ requestId: idSchema, projectId: idSchema, chapterId: idSchema })
-      .parse(p);
-    if (jobs.has(request.requestId)) throw new Error("任务已经开始。");
-    const messages = buildChapterTitleMessages(
-      repo,
-      request.projectId,
-      request.chapterId,
-    );
-    const controller = new AbortController();
-    jobs.set(request.requestId, controller);
-    try {
-      const text = await chat(
-        connectionForRole("title"),
-        messages,
-        () => {},
-        controller.signal,
-      );
-      if (controller.signal.aborted) throw new Error("已停止生成章节名称。");
-      return { title: parseChapterTitle(text) };
-    } finally {
-      jobs.delete(request.requestId);
-    }
-  },
   "ai:run": async (p, event) => {
-    const request: TaskRequest = taskSchema.parse(p);
+    const request = requestSchema.parse(p) as TaskRequest;
     if (jobs.has(request.requestId)) throw new Error("任务已经开始。");
     const controller = new AbortController();
     jobs.set(request.requestId, controller);
     try {
-      const config = connectionForRole(request.kind);
+      const config = connectionForRole(request.kind, request.model);
+      const opts = contextOptions(request.kind, request.model);
       return await runCreationTask(repo, request, {
-        model: config.model,
+        ...opts,
         signal: controller.signal,
         generate: (messages, delta) =>
-          chat(config, messages, delta, controller.signal),
+          chat(
+            config,
+            messages,
+            delta,
+            controller.signal,
+            opts.capabilities.outputTokens,
+          ),
         progress: (progress) => {
           if (!event.sender.isDestroyed())
             event.sender.send("ai:progress", progress);
@@ -1060,24 +468,14 @@ const handlers: Record<
     return result.filePath;
   },
   "project:export": async (p) => {
-    const request =
-      typeof p === "string"
-        ? { projectId: idSchema.parse(p), fragments: false }
-        : z
-            .object({
-              projectId: idSchema,
-              fragments: z.boolean().default(false),
-            })
-            .parse(p);
+    const request = { projectId: idSchema.parse(p) };
     const detail = repo.getDetail(request.projectId);
     const result = await dialog.showSaveDialog({
       title: "导出当前草稿",
       defaultPath: join(
         dataDir,
         "exports",
-        detail.project.title.replace(/[<>:"/\\|?*]/g, "_") +
-          (request.fragments ? "-片段" : "") +
-          ".md",
+        detail.project.title.replace(/[<>:"/\\|?*]/g, "_") + ".md",
       ),
       filters: [
         { name: "Markdown", extensions: ["md"] },
@@ -1085,7 +483,7 @@ const handlers: Record<
       ],
     });
     if (result.canceled || !result.filePath) return null;
-    const content = exportStory(repo, request.projectId, request.fragments);
+    const content = exportStory(repo, request.projectId);
     await writeFile(result.filePath, content, "utf8");
     return result.filePath;
   },
@@ -1214,7 +612,7 @@ if (hasLock) {
       app.setName("页间");
       assertDataLayoutSupported(dataDir);
       repo = new StoryRepository(join(dataDir, "database", "storybook.sqlite"));
-      Object.assign(handlers, conversationHandlers(repo));
+      Object.assign(handlers, workspaceHandlers(repo));
       const layout = await upgradeDataLayout(repo, dataDir);
       await cleanupDeletedAssets(repo, dataDir);
       if (layout.missing.length)

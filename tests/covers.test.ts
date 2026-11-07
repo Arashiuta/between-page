@@ -8,14 +8,18 @@ import { cropCover, coverCropSchema } from "../src/shared/cover";
 import { createDataDirectories } from "../src/main/data-layout";
 import { readAsset, removeAsset } from "../src/main/assets";
 import type { CoverUpload } from "../src/shared/types";
-const { webpDecode, destroyDecoder } = vi.hoisted(() => ({ webpDecode: vi.fn(), destroyDecoder: vi.fn() }));
+const { webpDecode, destroyDecoder } = vi.hoisted(() => ({
+  webpDecode: vi.fn(),
+  destroyDecoder: vi.fn(),
+}));
 vi.mock("electron", () => ({
   app: { isPackaged: false, getVersion: () => "test" },
   safeStorage: {},
   dialog: {},
   nativeImage: {
     createFromBuffer: (bytes: Buffer) => ({
-      isEmpty: () => bytes.length < 60 || bytes.subarray(0, 4).toString() === "RIFF",
+      isEmpty: () =>
+        bytes.length < 60 || bytes.subarray(0, 4).toString() === "RIFF",
       getSize: () => ({
         width: bytes.readUInt32BE(16),
         height: bytes.readUInt32BE(20),
@@ -24,8 +28,12 @@ vi.mock("electron", () => ({
   },
   BrowserWindow: class {
     webContents = { executeJavaScript: webpDecode };
-    loadURL() { return Promise.resolve(); }
-    destroy() { destroyDecoder(); }
+    loadURL() {
+      return Promise.resolve();
+    }
+    destroy() {
+      destroyDecoder();
+    }
   },
 }));
 import { createProjectWithCover, saveCover } from "../src/main/covers";
@@ -84,14 +92,26 @@ describe("封面裁切", () => {
 });
 describe("封面保存生命周期", () => {
   it("WebP 由 Chromium 解码，成功与失败均关闭临时解码窗口", async () => {
-    const bytes = Buffer.concat([Buffer.from("RIFF0000WEBP"), Buffer.alloc(70)]);
-    const webp = { ...upload(), name: "封面.webp", dataUrl: "data:image/webp;base64," + bytes.toString("base64") };
+    const bytes = Buffer.concat([
+      Buffer.from("RIFF0000WEBP"),
+      Buffer.alloc(70),
+    ]);
+    const webp = {
+      ...upload(),
+      name: "封面.webp",
+      dataUrl: "data:image/webp;base64," + bytes.toString("base64"),
+    };
     webpDecode.mockResolvedValueOnce({ width: 800, height: 400 });
-    const p = await createProjectWithCover(repo, dataDir, { ...story(), cover: webp });
+    const p = await createProjectWithCover(repo, dataDir, {
+      ...story(),
+      cover: webp,
+    });
     expect(repo.getImage(p.cover!.imageId).filename).toMatch(/\.webp$/);
     expect(destroyDecoder).toHaveBeenCalledTimes(1);
     webpDecode.mockRejectedValueOnce(new Error("无法解码"));
-    await expect(saveCover(repo, dataDir, p.id, { upload: webp })).rejects.toThrow("WebP");
+    await expect(
+      saveCover(repo, dataDir, p.id, { upload: webp }),
+    ).rejects.toThrow("WebP");
     expect(repo.getProject(p.id).cover).toEqual(p.cover);
     expect(destroyDecoder).toHaveBeenCalledTimes(2);
     expect(repo.listImages()).toHaveLength(1);

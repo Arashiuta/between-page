@@ -17,14 +17,29 @@ async function imageSize(bytes: Buffer) {
   if (imageMime(bytes).mime !== "image/webp")
     throw new Error("图片无法读取，请选择有效的 PNG、JPEG 或 WebP 图片。");
   // NativeImage only decodes PNG/JPEG; Chromium also supports WebP and alpha.
-  const decoder = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, offscreen: true } });
+  const decoder = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      offscreen: true,
+    },
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const decode = async () => {
       await decoder.loadURL("about:blank");
-      return decoder.webContents.executeJavaScript(`(async () => { const image = new Image(); image.src = ${JSON.stringify("data:image/webp;base64," + bytes.toString("base64"))}; await image.decode(); return { width: image.naturalWidth, height: image.naturalHeight }; })()`) as Promise<{ width: number; height: number }>;
+      return decoder.webContents.executeJavaScript(
+        `(async () => { const image = new Image(); image.src = ${JSON.stringify("data:image/webp;base64," + bytes.toString("base64"))}; await image.decode(); return { width: image.naturalWidth, height: image.naturalHeight }; })()`,
+      ) as Promise<{ width: number; height: number }>;
     };
-    return await Promise.race([decode(), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("图片读取超时。")), 15000); })]);
+    return await Promise.race([
+      decode(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("图片读取超时。")), 15000);
+      }),
+    ]);
   } catch {
     throw new Error("WebP 图片无法读取，请重新选择有效图片。");
   } finally {

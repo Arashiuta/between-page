@@ -1,88 +1,58 @@
-import type { BlueprintCandidate, BlueprintSection, Project } from "./types";
-import { emptyNovelPlan } from "./planning";
-
-export const blueprintDefaults: Pick<BlueprintSection, "id" | "title">[] = [
-  { id: "core-conflict", title: "核心冲突" },
-  { id: "character-arcs", title: "角色弧线" },
-  { id: "story-phases", title: "阶段推进" },
-  { id: "foreshadowing", title: "铺垫与回收计划" },
-  { id: "open-questions", title: "待确认事项" },
-];
-
-export function defaultBlueprintSections(): BlueprintSection[] {
-  return blueprintDefaults.map((section) => ({ ...section, content: "" }));
-}
-
-export function normalizeProject(project: Project): Project {
-  const novelPlan = project.novelPlan ?? emptyNovelPlan();
-  const sections = Array.isArray(project.blueprintSections)
-    ? project.blueprintSections.map((section) => ({ ...section }))
-    : defaultBlueprintSections();
-  const legacy = project.outline?.trim();
-  if (legacy) {
-    const existing = sections.find((section) => section.title === "整体蓝图");
-    if (existing) {
-      if (existing.content !== legacy && !existing.content.includes(legacy))
-        existing.content = [existing.content.trim(), legacy]
-          .filter(Boolean)
-          .join("\n\n");
-    } else {
-      sections.unshift({
-        id: "legacy-outline",
-        title: "整体蓝图",
-        content: legacy,
-      });
+import type {
+  Blueprint,
+  BlueprintLevel,
+  BlueprintNode,
+  Project,
+} from "./types";
+export const blueprintLabels: Record<BlueprintLevel, string> = {
+  section: "全局约束 / 方向分区",
+  synopsis: "总纲",
+  volume: "卷纲",
+  chapter: "章纲",
+  scene: "场景细纲",
+};
+export const emptyBlueprint = (): Blueprint => ({ nodes: [] });
+export const normalizeProject = (project: Project): Project => project;
+export function orderedBlueprint(nodes: BlueprintNode[]): BlueprintNode[] {
+  const result: BlueprintNode[] = [];
+  const visit = (id: string) => {
+    for (const n of nodes.filter((n) => n.parentId === id)) {
+      result.push(n);
+      visit(n.id);
     }
-  }
-  return {
-    ...project,
-    cover: project.cover ?? null,
-    novelPlan:
-      project.mode === "novel" && !novelPlan.volumes.length
-        ? {
-            ...novelPlan,
-            volumes: [
-              { id: project.id, title: "第一卷", plan: { content: "" } },
-            ],
-          }
-        : novelPlan,
-    creativeFreedom: project.creativeFreedom ?? "balanced",
-    outline: "",
-    blueprintSections: sections,
-    blueprintCandidates: project.blueprintCandidates || [],
   };
+  for (const n of nodes
+    .filter((n) => !n.parentId)
+    .sort(
+      (a, b) => Number(b.level === "section") - Number(a.level === "section"),
+    )) {
+    result.push(n);
+    visit(n.id);
+  }
+  return result;
 }
-
-export function appendCandidate(
-  sections: BlueprintSection[],
-  candidate: BlueprintCandidate,
-  sectionId: string,
-): BlueprintSection[] {
-  return applyBlueprintContent(
-    sections,
-    sectionId,
-    candidate.content,
-    "append",
-  );
-}
-
-export function applyBlueprintContent(
-  sections: BlueprintSection[],
-  sectionId: string,
-  content: string,
-  mode: "append" | "replace",
-): BlueprintSection[] {
-  return sections.map((section) =>
-    section.id === sectionId
-      ? {
-          ...section,
-          content:
-            mode === "replace"
-              ? content
-              : [section.content.trim(), content.trim()]
-                  .filter(Boolean)
-                  .join("\n\n"),
-        }
-      : section,
-  );
+export function validateBlueprint(blueprint: Blueprint, chapterIds: string[]) {
+  if (new Set(blueprint.nodes.map((n) => n.id)).size !== blueprint.nodes.length)
+    throw new Error("蓝图节点标识重复。");
+  const links = new Set<string>();
+  for (const n of blueprint.nodes) {
+    const parent = blueprint.nodes.find((p) => p.id === n.parentId);
+    if (n.chapterId && !chapterIds.includes(n.chapterId))
+      throw new Error("蓝图关联的章节不存在。");
+    if (n.level === "chapter" && n.chapterId) {
+      if (links.has(n.chapterId)) throw new Error("每章只能关联一个章纲。");
+      links.add(n.chapterId);
+    }
+    if (["section", "synopsis", "volume"].includes(n.level)) {
+      if (n.parentId) throw new Error("全局分区、总纲和卷纲必须位于顶层。");
+    } else if (n.level === "chapter") {
+      if (n.parentId && parent?.level !== "volume")
+        throw new Error("章纲只能归入卷纲。");
+    } else if (!parent || parent.level !== "chapter")
+      throw new Error("场景细纲必须归入章纲。");
+    if (n.level !== "chapter" && n.chapterId)
+      throw new Error("只有章纲能关联正文章节。");
+  }
+  if (blueprint.nodes.filter((n) => n.level === "synopsis").length > 1)
+    throw new Error("只保留一份全书总纲。");
 }

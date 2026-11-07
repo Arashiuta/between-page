@@ -2619,23 +2619,19 @@ input {
   color: var(--primary);
 }
 .workbench-tools,
-.workflow-section,
 .workbench-latest-output {
   border-top: 1px solid var(--border);
   padding-top: 17px;
 }
 .workbench-section-heading,
 .workbench-step-heading,
-.workflow-step-heading,
-.workflow-run-title,
 .workbench-detail-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
-.workbench-section-heading h3,
-.workflow-section h4 {
+.workbench-section-heading h3 {
   font-size: 1.071429rem;
   font-weight: 600;
 }
@@ -2708,140 +2704,12 @@ input {
 .workbench-tool-detail dd {
   margin: 0;
 }
-.workbench-actions,
-.workflow-start-row,
-.workflow-step-actions {
+.workbench-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 9px;
   margin-top: 12px;
-}
-.workflow-template-toolbar {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 12px;
-}
-.workflow-template-toolbar > .n-select {
-  flex: 1;
-  min-width: 180px;
-}
-.workflow-description {
-  color: var(--muted);
-  font-size: 0.857143rem;
-  margin-top: 9px;
-}
-.workflow-editor,
-.workflow-run-panel {
-  padding: 14px 0;
-  border-top: 1px solid var(--border);
-  margin-top: 14px;
-}
-.workflow-edit-step {
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-  display: grid;
-  gap: 9px;
-}
-.workflow-step-heading > div,
-.workflow-run-title > div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.workflow-runs .workbench-section-heading {
-  margin: 16px 0 10px;
-}
-.workflow-runs .n-select {
-  width: min(440px, 65%);
-}
-.workflow-run-title > div {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-}
-.workflow-run-title span,
-.workflow-progress small {
-  color: var(--muted);
-  font-size: 0.785714rem;
-}
-.workflow-progress {
-  display: flex;
-  list-style: none;
-  overflow-x: auto;
-  gap: 7px;
-  padding: 14px 0;
-  margin: 0;
-}
-.workflow-progress li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 140px;
-  padding: 9px;
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-.workflow-progress li.approved {
-  border-color: var(--success);
-  background: var(--success-soft);
-}
-.workflow-progress li.skipped {
-  opacity: 0.65;
-}
-.workflow-progress li > span {
-  display: grid;
-  place-items: center;
-  width: 23px;
-  height: 23px;
-  border-radius: 50%;
-  background: var(--border);
-  font-size: 0.785714rem;
-  flex: 0 0 auto;
-}
-.workflow-progress li > div {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 3px;
-}
-.workflow-progress strong {
-  font-size: 0.857143rem;
-  overflow-wrap: anywhere;
-}
-.workflow-current-step {
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
-}
-.workflow-current-step .workflow-step-heading h4 {
-  font-size: 1.071429rem;
-}
-.workflow-current-step > .muted {
-  display: block;
-  margin: 8px 0 12px;
-}
-.workflow-empty {
-  border: 1px dashed var(--border);
-  color: var(--muted);
-  padding: 25px;
-  text-align: center;
-  font-size: 0.857143rem;
-}
-.workflow-apply-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-}
-.workflow-apply-box > .workbench-section-heading {
-  flex-basis: 100%;
-}
-.workflow-apply-box > .n-select {
-  width: min(230px, 100%);
 }
 .memory-draft {
   padding: 15px;
@@ -2961,9 +2829,6 @@ input {
   }
   .help-search {
     width: 55%;
-  }
-  .workflow-template-toolbar {
-    flex-wrap: wrap;
   }
 }
 
@@ -4588,8 +4453,7 @@ button:disabled {
     grid-column: 1 / -1;
   }
 }
-.novel-workspace,
-.fragment-shelf {
+.novel-workspace {
   min-width: 0;
 }
 .novel-stage-grid {
@@ -4747,24 +4611,11 @@ button:disabled {
 .generate-next-level label {
   flex-basis: 100%;
 }
-.fragment-card,
 .novel-setting-guide {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px;
   margin: 18px 0;
-}
-.fragment-card > .n-select {
-  margin: 10px 0;
-}
-.fragment-excerpt {
-  line-height: 1.8;
-  white-space: pre-line;
-  opacity: 0.8;
-}
-.fragment-context {
-  padding: 16px 22px;
-  border-bottom: 1px solid var(--border);
 }
 .planning-draft-review article {
   margin-bottom: 18px;

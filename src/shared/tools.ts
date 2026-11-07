@@ -1,194 +1,88 @@
-import type { TaskKind } from "./types";
+import type { Mode, TaskKind } from "./types";
 export const toolGroups: { id: string; name: string; kinds: TaskKind[] }[] = [
   { id: "brainstorm", name: "灵感脑暴", kinds: ["brainstorm"] },
-  { id: "organize", name: "素材整理", kinds: ["organize"] },
-  {
-    id: "planning",
-    name: "设定与蓝图",
-    kinds: ["develop", "outline", "adjust"],
-  },
-  { id: "writing", name: "正文写作", kinds: ["opening", "chapter"] },
-  { id: "polish", name: "文段打磨", kinds: ["revise", "scene", "dialogue"] },
-  { id: "checking", name: "故事检查", kinds: ["check", "pacing", "arc"] },
+  { id: "blueprint", name: "完善蓝图", kinds: ["blueprint"] },
+  { id: "writing", name: "正文写作", kinds: ["opening", "continue"] },
+  { id: "polish", name: "文段打磨", kinds: ["polish"] },
+  { id: "checking", name: "故事检查", kinds: ["check"] },
   { id: "notes", name: "记忆整理", kinds: ["notes"] },
   { id: "prompt", name: "插画构思", kinds: ["prompt"] },
 ];
 export const toolGroupFor = (kind: TaskKind) =>
-  toolGroups.find((g) => g.kinds.includes(kind))!;
-
-export const toolCategories = [
-  "灵感",
-  "策划",
-  "正文",
-  "润色",
-  "检查",
-  "插画构思",
-];
-interface ToolInfo {
-  category: string;
-  purpose: string;
-  input: string;
-  context: string;
-  result: string;
-  target: string;
-  output:
-    | "prose"
-    | "blueprint"
-    | "development"
-    | "selection"
-    | "memory"
-    | "illustration"
-    | "analysis";
-  candidate?: boolean;
-}
-// Output destinations are shared by the workbench and persistence, so a new tool
-// does not need separate, potentially inconsistent allowlists in each view.
-export const toolInfo: Record<TaskKind, ToolInfo> = {
-  opening: {
-    category: "正文",
-    purpose: "只给一个角色或世界关键词，直接开始故事，设定可以边写边长出来。",
-    input:
-      "例如：围绕主角的目标和当前处境写一段开篇，其他细节自由发挥。也可留空，使用故事想法。",
-    context: "故事想法、已有设定、创作自由度。",
-    result: "直接进入场景的开篇正文。",
-    target: "章节草稿。",
-    output: "prose",
+  toolGroups.find((g) => g.kinds.includes(kind));
+export const modeTools = {
+  explore: {
+    blueprintLevels: ["section"],
+    description: "跟随当前处境探索；用自由分区记录近期方向，保留未定空间。",
+    writing: "从已有处境开始或继续故事，不预设全书终局。",
+    prompts: {
+      brainstorm:
+        "自由探索聊天：围绕当前故事的可能性、人物选择和未知空间交流，不要求补齐大纲或结局。",
+      settings:
+        "自由探索设定：只补充本次需要的人物与世界信息，允许保留空白，不强迫建立完整设定表。",
+      blueprint:
+        "自由探索蓝图：只处理指定自由分区，记录方向、近期安排、伏笔或待定问题，不创建层级大纲。保存的其他层级仍须参考。",
+      opening: "自由探索开篇：允许从一个处境、一段关系或一个问题即兴开始。",
+      continue:
+        "自由探索续写：跟随当前章最后的处境推进，不替作者决定全书结局。",
+      polish: "自由探索打磨：参考当前章完整正文与全部有效故事依据，只改选区。",
+      check:
+        "自由探索检查：检查已写事实、人物和当前方向，不把缺少完整大纲、终局或尚未揭示的秘密列为错误。",
+      notes:
+        "自由探索记忆：只提取已采用正文明确发生的事实，保留来源，不将探索可能性当事实。",
+      prompt: "自由探索插画：从当前场景提炼画面，保留未定义的信息空间。",
+      title: "自由探索命名：围绕本章内容或已有方向命名，避免提前揭示未定未来。",
+    },
   },
-  chapter: {
-    category: "正文",
-    purpose: "接着当前处境推进故事；本章计划可选，AI 按创作自由度安排遭遇。",
-    input: "可以只说“继续故事”或留空；也可以详细指定事件、人物表现与篇幅。",
-    context: "当前章节、此前正文、蓝图、设定与有效记忆。",
-    result: "可编辑的正文草稿。",
-    target: "章节草稿。",
-    output: "prose",
+  novel: {
+    blueprintLevels: ["section", "synopsis", "volume", "chapter", "scene"],
+    description: "从全局约束逐层规划到场景；各层均可留空。",
+    writing: "遵循已有蓝图与前文推进，缺少某层规划时正常写作。",
+    prompts: {
+      brainstorm:
+        "长篇创作聊天：围绕全书构想、结构、人物发展和伏笔交流，提供灵感，不进行规划写入。",
+      settings:
+        "长篇创作设定：完善长期人物约束、世界规则、叙事偏好，结合全书蓝图指出需要协调处。",
+      blueprint:
+        "长篇创作蓝图：按指定总纲、卷纲、章纲、场景或全局分区修改，遵守上级约束与人物发展因果。规划层级可留空。",
+      opening:
+        "长篇创作开篇：参考关联章纲和场景细纲及全书安排，未规划处可合理发挥，不要求先补全所有规划。",
+      continue:
+        "长篇创作续写：从正文结尾推进，兼顾本章阶段、全书伏笔和人物发展，不提前兑现未来计划。",
+      polish:
+        "长篇创作打磨：完整参考当前章，同时参考关联章纲、场景细纲与上级蓝图，只改选区。",
+      check:
+        "长篇创作检查：检查正文与全书规划、人物发展、时间与认知的一致性，区分计划与已发生事实。",
+      notes:
+        "长篇创作记忆：只提取已采用正文，明确章节与采用版本来源，不从未来规划推断事实。",
+      prompt:
+        "长篇创作插画：结合章节阶段与设定参考图生成画面描述，避免使用角色未来才获得的状态。",
+      title: "长篇创作命名：参考本章与关联规划，贴合章节阶段。",
+    },
   },
-  develop: {
-    category: "策划",
-    purpose:
-      "从零构思，或把写到现在的人物、能力和世界逐步完善，也能分区更新蓝图。",
-    input:
-      "例如：保留已写剧情，完善主角能力和世界势力设定；只规划近期剧情，不决定结局。留空则从现有故事整理。",
-    context:
-      "全故事范围的已采用正文、有效记忆、当前草稿与已有资料；逐条标注提炼依据或新增构想。",
-    result: "可编辑、可逐项采用的人物、世界与蓝图分区建议。",
-    target: "世界与人物 / 故事蓝图；支持撤销本次更新。",
-    output: "development",
-    candidate: true,
-  },
-  brainstorm: {
-    category: "灵感",
-    purpose: "围绕一个核心点发散出不同方向，帮助打开思路。",
-    input: "一个画面、人物关系、冲突或问题；可使用故事想法。",
-    context: "故事想法、蓝图、人物与世界资料。",
-    result: "多个可选方向及其吸引力、代价和冲突。",
-    target: "创作候选，可继续发展成蓝图与设定。",
-    output: "blueprint",
-    candidate: true,
-  },
-  organize: {
-    category: "灵感",
-    purpose:
-      "忠实整理零碎想法，指出关系、矛盾与空白；需要主动补充时使用“完善设定与蓝图”。",
-    input: "随手记录的句子、片段和问题。",
-    context: "故事想法、蓝图与创作资料。",
-    result: "整理后的主题、片段和待确认事项。",
-    target: "蓝图候选。",
-    output: "blueprint",
-    candidate: true,
-  },
-  outline: {
-    category: "策划",
-    purpose: "规划整体剧情，或只安排下一站、近期章节；支持完整大纲和边走边写。",
-    input: "希望发生的事件、人物变化、近期方向或结局倾向。",
-    context: "已有蓝图、章节计划、故事资料与有效记忆。",
-    result: "有因果关系的剧情方案或章节计划。",
-    target: "蓝图候选或本章计划，可继续整理成多个分区。",
-    output: "blueprint",
-    candidate: true,
-  },
-  adjust: {
-    category: "策划",
-    purpose: "根据新想法调整后续走向，核对已发生事实与新设定的衔接。",
-    input: "要改变的方向及必须保留的内容。",
-    context: "既有蓝图、采用章节、人物关系和已埋线索。",
-    result: "调整后的后续安排与受影响事项。",
-    target: "蓝图候选。",
-    output: "blueprint",
-    candidate: true,
-  },
-  scene: {
-    category: "正文",
-    purpose: "设计或改写一个有目标、阻力、转折的场景。",
-    input: "场景目标、出场人物、希望出现的变化。",
-    context: "选中文段、章节计划、人物资料与上下文。",
-    result: "场景方案或场景正文。",
-    target: "章节草稿。",
-    output: "prose",
-  },
-  revise: {
-    category: "润色",
-    purpose: "按指定方向改写选中的段落，保留其余事实。",
-    input: "先在正文选中文段，再写修改方向。",
-    context: "选中文段、章节计划、人物资料与上下文。",
-    result: "可直接替换选区的文段。",
-    target: "选中文段。",
-    output: "selection",
-  },
-  dialogue: {
-    category: "润色",
-    purpose: "打磨对白语气、节奏和潜台词。",
-    input: "对白片段及人物当下的关系或情绪。",
-    context: "当前章节、角色资料和故事记忆。",
-    result: "对白替换稿或具体打磨建议。",
-    target: "章节草稿。",
-    output: "prose",
-  },
-  pacing: {
-    category: "检查",
-    purpose: "检查推进、重复、信息释放、张弛和章节钩子。",
-    input: "检查范围及希望重点关注的问题。",
-    context: "章节正文、章节计划和蓝图。",
-    result: "有文本依据的节奏诊断与优先调整建议。",
-    target: "诊断候选。",
-    output: "analysis",
-    candidate: true,
-  },
-  arc: {
-    category: "检查",
-    purpose: "追踪人物欲望、选择、代价和阶段变化。",
-    input: "关注的人物及其预期变化。",
-    context: "人物设定、关系、采用章节与蓝图。",
-    result: "人物弧线诊断及待补足环节。",
-    target: "诊断候选。",
-    output: "analysis",
-    candidate: true,
-  },
-  check: {
-    category: "检查",
-    purpose: "核对时间线、人物认知、设定规则和前后连续性。",
-    input: "检查范围或想核对的人物、秘密、线索。",
-    context: "采用章节、故事资料与正式记忆。",
-    result: "带依据的问题清单和小幅修正选项。",
-    target: "检查结果草稿。",
-    output: "analysis",
-  },
-  notes: {
-    category: "检查",
-    purpose: "从已采用章节提取事实和人物认知，先供作者审核。",
-    input: "当前章节必须已经采用。",
-    context: "该章节的已采用版本。",
-    result: "分类记忆草稿。",
-    target: "确认后写入故事记忆。",
-    output: "memory",
-  },
-  prompt: {
-    category: "插画构思",
-    purpose: "把一个故事瞬间整理成完整的绘图提示词。",
-    input: "想绘制的瞬间，也可先选择正文片段。",
-    context: "人物当前外观、服装、场景和参考图。",
-    result: "可编辑的静态画面提示词。",
-    target: "插画生成面板。",
-    output: "illustration",
-  },
+} satisfies Record<
+  Mode,
+  {
+    blueprintLevels: string[];
+    description: string;
+    writing: string;
+    prompts: Record<TaskKind, string>;
+  }
+>;
+export const toolNames: Record<TaskKind, string> = {
+  brainstorm: "灵感脑暴",
+  settings: "完善设定",
+  blueprint: "完善蓝图",
+  opening: "开篇",
+  continue: "续写",
+  polish: "文段打磨",
+  check: "故事检查",
+  notes: "记忆整理",
+  prompt: "插画构思",
+  title: "章节命名",
 };
+export const defaultCapabilities = () => ({
+  vision: false,
+  contextTokens: 128000,
+  outputTokens: 8000,
+});

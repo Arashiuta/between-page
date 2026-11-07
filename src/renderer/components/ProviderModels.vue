@@ -8,10 +8,13 @@ import {
   NModal,
   NAlert,
   NPagination,
+  NInputNumber,
 } from "naive-ui";
 import { Download, ListChecks, Plus } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import { modelSelection } from "../../shared/models";
+import { defaultCapabilities } from "../../shared/tools";
+import type { ModelCapabilities } from "../../shared/types";
 
 interface Draft {
   baseUrl: string;
@@ -19,6 +22,7 @@ interface Draft {
   model: string;
   selectedModels: string[];
   availableModels: string[];
+  capabilities: Record<string, ModelCapabilities>;
 }
 const props = defineProps<{ kind: "text" | "image" }>();
 const config = defineModel<Draft>({ required: true });
@@ -43,6 +47,23 @@ watch(search, () => (page.value = 1));
 const options = computed(() =>
   config.value.selectedModels.map((id) => ({ label: id, value: id })),
 );
+const capabilityModel = ref(config.value.model);
+watch(
+  () => config.value.model,
+  (model) => (capabilityModel.value = model),
+);
+const capability = computed({
+  get: () =>
+    config.value.capabilities[capabilityModel.value] ?? defaultCapabilities(),
+  set: (value: ModelCapabilities) =>
+    (config.value = {
+      ...config.value,
+      capabilities: {
+        ...config.value.capabilities,
+        [capabilityModel.value]: value,
+      },
+    }),
+});
 function open() {
   candidates.value = [
     ...new Set([
@@ -121,6 +142,43 @@ function syncSelection() {
       }}）</NButton
     >
   </div>
+  <details
+    v-if="kind === 'text' && config.selectedModels.length"
+    class="model-capabilities"
+  >
+    <summary>模型能力与上下文预算</summary>
+    <p class="field-help">
+      按服务商说明填写。有关联参考图时，未启用图片输入的模型会阻止请求；软件不会省略图片继续调用。预算采用保守估算。
+    </p>
+    <NSelect v-model:value="capabilityModel" :options="options" />
+    <NCheckbox
+      :checked="capability.vision"
+      @update:checked="(vision) => (capability = { ...capability, vision })"
+      >支持图片输入</NCheckbox
+    >
+    <label class="field-label">上下文容量（token）</label>
+    <NInputNumber
+      :value="capability.contextTokens"
+      :min="4096"
+      :max="10000000"
+      @update:value="
+        (v) => {
+          if (v) capability = { ...capability, contextTokens: v };
+        }
+      "
+    />
+    <label class="field-label">预留并限制输出（token）</label>
+    <NInputNumber
+      :value="capability.outputTokens"
+      :min="256"
+      :max="200000"
+      @update:value="
+        (v) => {
+          if (v) capability = { ...capability, outputTokens: v };
+        }
+      "
+    />
+  </details>
   <NModal
     v-model:show="show"
     preset="card"

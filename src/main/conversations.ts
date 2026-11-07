@@ -2,132 +2,149 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { StoryRepository } from "./database";
 import type {
+  ChatMessage,
+  CheckBatch,
+  CreationConversation,
+  CreationTurn,
   TaskRequest,
   TaskResult,
   ProgressEvent,
-  BlueprintCandidate,
+  TaskPreview,
+  ProjectDetail,
 } from "../shared/types";
+import { requestKey, requestSchema } from "../shared/requests";
+import { modeTools, toolNames } from "../shared/tools";
 import {
-  conversationTargetSchema,
-  conversationTarget,
-  targetKey,
-  turnReviewSchema,
-  reviewText,
-  resultReview,
-  type ConversationTarget,
-  type CreationConversation,
-  type CreationTurn,
-  type ConversationDetail,
-  type TurnReview,
-} from "../shared/conversations";
-import { buildTask, parseMemories } from "./prompts";
-import {
-  parseDevelopment,
-  applyDevelopment,
-  undoDevelopment,
-} from "./development";
-import { developmentText } from "../shared/development";
-import {
-  getPlanningBlock,
-  parsePlanning,
-  planningBase,
-  applyPlanning,
-} from "./planning";
-import { toolInfo } from "../shared/tools";
-import { roleDefinitions } from "../shared/roles";
-import type { ChatMessage } from "./provider";
-
-const now = () => new Date().toISOString();
-const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
-const identity = z.object({
-  projectId: z.string().uuid(),
-  id: z.string().uuid(),
-});
-function writeConversation(repo: StoryRepository, c: CreationConversation) {
-  repo.db
-    .prepare("UPDATE creation_conversations SET payload = ? WHERE id = ?")
-    .run(JSON.stringify(c), c.id);
-}
-function writeTurn(repo: StoryRepository, turn: CreationTurn) {
-  turn.updatedAt = now();
-  repo.db
-    .prepare("UPDATE creation_turns SET payload = ? WHERE id = ?")
-    .run(JSON.stringify(turn), turn.id);
+  buildContext,
+  basis,
+  estimatedTokens,
+  fingerprint,
+  type ContextOptions,
+} from "./context";
+import { buildChangeSet, saveChangeSet, listChangeSets } from "./changes";
+import { selectionText } from "./document-edit";
+import { validateBlueprint } from "../shared/blueprint";
+const copy = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+const json = (s: string) =>
+  JSON.parse(
+    s
+      .trim()
+      .replace(/^\x60\x60\x60(?:json)?\s*/i, "")
+      .replace(/\s*\x60\x60\x60$/, ""),
+  );
+export function validateRequest(repo: StoryRepository, r: TaskRequest) {
+  const d = repo.getDetail(r.projectId);
+  if (d.project.mode !== r.mode)
+    throw new Error("作品模式已变化，请切换到当前模式。");
+  const chapter =
+    "chapterId" in r && r.chapterId
+      ? d.chapters.find((c) => c.id === r.chapterId)
+      : undefined;
+  if ("chapterId" in r && r.chapterId && !chapter)
+    throw new Error("目标章节不存在或不属于当前作品。");
+  if (r.kind === "opening" && chapter?.content.trim())
+    throw new Error("当前章已有正文，请新建空章开篇，或使用续写、选区打磨。");
+  if (r.kind === "continue" && !chapter?.content.trim())
+    throw new Error("当前章为空，请先使用开篇。");
+  if (
+    r.kind === "polish" &&
+    (!chapter ||
+      selectionText(chapter.document, r.selection) !== r.selection.text)
+  )
+    throw new Error("请重新选择需要打磨的正文。");
+  if (
+    r.kind === "prompt" &&
+    r.selection &&
+    (!chapter ||
+      selectionText(chapter.document, r.selection) !== r.selection.text)
+  )
+    throw new Error("插画选区已变化，请重新选择。");
+  if (
+    r.kind === "settings" &&
+    r.cardId &&
+    !d.cards.some((c) => c.id === r.cardId)
+  )
+    throw new Error("目标资料不属于当前作品。");
+  if (r.kind === "blueprint") {
+    const t = r.target,
+      existing = d.project.blueprint.nodes.find((n) => n.id === t.id);
+    if (!modeTools[r.mode].blueprintLevels.includes(t.level))
+      throw new Error("当前模式不支持这个规划层级。");
+    if (t.id && (!existing || existing.level !== t.level))
+      throw new Error("蓝图目标不存在或层级不匹配。");
+    if (t.id && t.count !== 1) throw new Error("编辑现有节点只能生成一项。");
+    if (!t.id) {
+      const node = {
+        id: randomUUID(),
+        level: t.level,
+        parentId: t.parentId ?? null,
+        chapterId: t.chapterId ?? null,
+        title: "待生成",
+        content: "",
+      };
+      validateBlueprint(
+        { nodes: [...d.project.blueprint.nodes, node] },
+        d.chapters.map((c) => c.id),
+      );
+      if (t.chapterId && t.count > 1)
+        throw new Error("同一正文只能关联一个章纲。");
+      if (t.level === "synopsis" && t.count > 1)
+        throw new Error("只保留一个总纲。");
+    }
+  }
+  if (r.kind === "check") {
+    const ids =
+      r.scope.type === "book"
+        ? d.chapters.map((c) => c.id)
+        : r.scope.type === "current"
+          ? [r.scope.chapterId]
+          : r.scope.chapterIds;
+    if (
+      !ids.length ||
+      new Set(ids).size !== ids.length ||
+      ids.some((id) => !d.chapters.some((c) => c.id === id))
+    )
+      throw new Error("检查范围为空、重复或包含其他作品的章节。");
+  }
+  if (
+    r.kind === "notes" &&
+    (!chapter?.acceptedRevisionId || chapter.needsReview)
+  )
+    throw new Error("请先采用或复核本章。");
+  return d;
 }
 export function getConversation(
   repo: StoryRepository,
-  projectId: string,
+  pid: string,
   id: string,
 ): CreationConversation {
-  repo.getProject(projectId);
   const row = repo.db
     .prepare(
       "SELECT payload FROM creation_conversations WHERE id = ? AND project_id = ?",
     )
-    .get(id, projectId) as { payload: string } | undefined;
-  if (!row) throw new Error("创作对话不存在或不属于当前故事。");
+    .get(id, pid) as { payload: string } | undefined;
+  if (!row) throw new Error("对话不存在或不属于当前故事。");
   return JSON.parse(row.payload);
 }
 export function getTurn(
   repo: StoryRepository,
-  projectId: string,
+  pid: string,
   id: string,
 ): CreationTurn {
   const row = repo.db
     .prepare(
       "SELECT payload FROM creation_turns WHERE id = ? AND project_id = ?",
     )
-    .get(id, projectId) as { payload: string } | undefined;
-  if (!row) throw new Error("创作版本不存在或不属于当前故事。");
+    .get(id, pid) as { payload: string } | undefined;
+  if (!row) throw new Error("结果不存在或不属于当前故事。");
   return JSON.parse(row.payload);
-}
-function validateTarget(
-  repo: StoryRepository,
-  projectId: string,
-  target: ConversationTarget,
-) {
-  repo.getProject(projectId);
-  if (
-    target.chapterId &&
-    repo.getChapter(target.chapterId).projectId !== projectId
-  )
-    throw new Error("目标章节不属于当前故事。");
-  if (target.planningTarget)
-    getPlanningBlock(repo, projectId, target.planningTarget);
-}
-export function createConversation(
-  repo: StoryRepository,
-  projectId: string,
-  input: ConversationTarget,
-  title?: string,
-  legacy = false,
-): CreationConversation {
-  const target = conversationTargetSchema.parse(input);
-  if (!legacy) validateTarget(repo, projectId, target);
-  const c: CreationConversation = {
-    id: randomUUID(),
-    projectId,
-    target,
-    title:
-      title?.trim() ||
-      `${roleDefinitions.find((r) => r.id === target.kind)?.name ?? "创作"} · 新对话`,
-    selectedTurnId: null,
-    draftInstruction: "",
-    autoTitle: !title,
-    createdAt: now(),
-    updatedAt: now(),
-  };
-  repo.db
-    .prepare("INSERT INTO creation_conversations VALUES (?, ?, ?)")
-    .run(c.id, projectId, JSON.stringify(c));
-  return c;
 }
 export function conversationDetail(
   repo: StoryRepository,
-  projectId: string,
+  pid: string,
   id: string,
-): ConversationDetail {
-  const conversation = getConversation(repo, projectId, id);
+) {
+  const conversation = getConversation(repo, pid, id);
   const turns = (
     repo.db
       .prepare(
@@ -135,768 +152,454 @@ export function conversationDetail(
       )
       .all(id) as { payload: string }[]
   ).map((r) => JSON.parse(r.payload) as CreationTurn);
-  for (const turn of turns) {
-    try {
-      if (turn.review.memoryRevisionId) {
-        const source = repo.getRevision(turn.review.memoryRevisionId);
-        if (repo.getChapter(source.chapterId).acceptedRevisionId !== source.id)
-          turn.invalidReason = "来源采用版本已变化，此记忆版本不能直接写入。";
-      }
-      for (const change of turn.review.developmentDraft?.changes ?? [])
-        for (const source of change.sources)
-          repo.getRevision(source.revisionId);
-    } catch {
-      turn.invalidReason =
-        "来源章节或版本已删除，此结果仅供查看、复制或作为候选重新生成。";
-    }
-  }
-  let invalidReason: string | undefined;
-  try {
-    validateTarget(repo, projectId, conversation.target);
-  } catch {
-    invalidReason =
-      "原目标已删除，此对话仅供查看和复制。请为其他目标新建对话。";
-  }
-  return { conversation, turns, invalidReason };
+  return { conversation, turns };
 }
-
-function importLegacy(repo: StoryRepository, projectId: string) {
-  const key = `creation.imported.${projectId}`;
-  if (repo.getSetting(key, false)) return;
-  repo.db.transaction(() => {
-    const saved = repo.getSetting<Record<string, any> | null>(
-      `scratch.${projectId}`,
-      null,
-    );
-    if (saved?.output?.trim()) {
-      const c = createConversation(
-        repo,
-        projectId,
-        {
-          kind: saved.kind || "chapter",
-          chapterId: saved.chapterId || undefined,
-          planningTarget: ["outline", "adjust"].includes(saved.kind)
-            ? (saved.planningDraft?.target ?? saved.planningTarget)
-            : undefined,
-          writingScope: saved.outputScope ?? undefined,
-          outputMode: ["revise", "scene", "dialogue"].includes(saved.kind)
-            ? saved.outputMode
-            : undefined,
-          selectionRange: saved.outputSelection ?? undefined,
-        },
-        "旧工作台草稿",
-        true,
-      );
-      c.legacy = true;
-      c.source = {
-        content: saved.sourceContent ?? "",
-        selection: saved.outputSelection ?? undefined,
-        memoryRevisionId: saved.memoryRevisionId || undefined,
-      };
-      const review = resultReview({
-        ...saved,
-        text: saved.output,
-      } as TaskResult);
-      review.text = saved.output;
-      const turn: CreationTurn = {
-        id: randomUUID(),
-        conversationId: c.id,
-        projectId,
-        number: 1,
-        parentTurnId: null,
-        instruction: saved.instruction ?? "",
-        status: "complete",
-        rawResponse: reviewText(review),
-        result: copy(review),
-        review,
-        sourceContent: c.source.content,
-        selection: c.source.selection,
-        history: [],
-        applied: [],
-        error: "",
-        model: "旧草稿",
-        createdAt: now(),
-        updatedAt: now(),
-        undoId: saved.developmentUndoId || undefined,
-      };
-      repo.db
-        .prepare("INSERT INTO creation_turns VALUES (?, ?, ?, ?)")
-        .run(turn.id, c.id, projectId, JSON.stringify(turn));
-      c.selectedTurnId = turn.id;
-      writeConversation(repo, c);
-    }
-    repo.setSetting(key, true);
-  })();
+function writeConversation(repo: StoryRepository, c: CreationConversation) {
+  repo.db
+    .prepare(
+      "INSERT INTO creation_conversations VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
+    )
+    .run(c.id, c.projectId, JSON.stringify(c));
 }
-export function listConversations(repo: StoryRepository, projectId: string) {
-  repo.getProject(projectId);
-  importLegacy(repo, projectId);
+function writeTurn(repo: StoryRepository, t: CreationTurn) {
+  repo.db
+    .prepare(
+      "INSERT INTO creation_turns VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
+    )
+    .run(t.id, t.conversationId, t.projectId, JSON.stringify(t));
+}
+export function createConversation(
+  repo: StoryRepository,
+  r: TaskRequest,
+): CreationConversation {
+  validateRequest(repo, r);
+  const c: CreationConversation = {
+    id: randomUUID(),
+    projectId: r.projectId,
+    mode: r.mode,
+    kind: r.kind,
+    key: requestKey(r),
+    title: toolNames[r.kind] + " · " + (r.instruction.slice(0, 30) || "新对话"),
+    request: copy(r),
+    selectedTurnId: null,
+    createdAt: new Date().toISOString(),
+  };
+  delete c.request.conversationId;
+  delete c.request.parentTurnId;
+  writeConversation(repo, c);
+  return c;
+}
+export function listConversations(repo: StoryRepository, pid: string) {
+  repo.getProject(pid);
   return (
     repo.db
       .prepare(
         "SELECT payload FROM creation_conversations WHERE project_id = ? ORDER BY rowid DESC",
       )
-      .all(projectId) as { payload: string }[]
-  )
-    .map((r) => JSON.parse(r.payload) as CreationConversation)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      .all(pid) as { payload: string }[]
+  ).map((r) => JSON.parse(r.payload) as CreationConversation);
 }
-function syncCandidate(repo: StoryRepository, turn: CreationTurn) {
-  const project = repo.getProject(turn.projectId);
-  const candidates = project.blueprintCandidates.map((candidate) =>
-    candidate.turnId === turn.id
-      ? {
-          ...candidate,
-          content: turn.review.text,
-          development: turn.review.developmentDraft ?? undefined,
-        }
-      : candidate,
-  );
-  if (project.blueprintCandidates.some((c) => c.turnId === turn.id))
-    repo.updateProject(turn.projectId, { blueprintCandidates: candidates });
+function contract(r: TaskRequest) {
+  if (r.kind === "settings")
+    return (
+      '只输出JSON：{"changes":[{"type":"card","cardId":"已有资料ID，新增则省略","kind":"character|world|inspiration","name":"资料名","field":"description|constraints|section","sectionId":"已有分区ID，新增则省略","title":"分区标题","content":"该目标的完整新内容"}]}。也可使用{"type":"project","field":"world|style","content":"完整内容"}修改世界规则或叙事偏好。禁止蓝图修改。不得返回未知字段。同一目标只出现一次。' +
+      (r.cardId ? "只修改资料：" + r.cardId : "")
+    );
+  if (r.kind === "blueprint")
+    return `仅处理指定蓝图目标 ${JSON.stringify(r.target)}。返回 ${r.target.id ? 1 : r.target.count} 项。只输出JSON：{"items":[{"title":"名称","content":"该节点完整新内容"}]}。不创建正文、不修改设定。`;
+  if (r.kind === "notes")
+    return '只输出JSON：{"records":[{"kind":"summary|fact|state|relationship|knowledge|foreshadow","content":"自足事实记录"}]}。最多24条。';
+  if (r.kind === "polish") return "本次打磨方向：" + r.aspect;
+  return "";
 }
-export function saveTurnReview(
+export async function prepareConversationTask(
   repo: StoryRepository,
-  projectId: string,
-  id: string,
-  value: TurnReview,
+  r: TaskRequest,
+  opts: ContextOptions,
+  extra = "",
 ) {
-  const turn = getTurn(repo, projectId, id);
-  if (turn.status === "generating") throw new Error("生成期间不能修改版本。");
-  const review = turnReviewSchema.parse(value);
-  if (
-    (review.planningDraft && review.planningDraft.projectId !== projectId) ||
-    (review.developmentDraft && review.developmentDraft.projectId !== projectId)
-  )
-    throw new Error("审核稿不属于当前故事。");
-  // Generation provenance belongs to the version, never to the editable draft.
-  if (
-    review.resultType !== turn.review.resultType ||
-    review.memoryRevisionId !== turn.review.memoryRevisionId
-  )
-    throw new Error("不能修改版本的结果类型或来源。");
-  if (
-    review.planningDraft &&
-    (!turn.review.planningDraft ||
-      review.planningDraft.base !== turn.review.planningDraft.base ||
-      JSON.stringify(review.planningDraft.target) !==
-        JSON.stringify(turn.review.planningDraft.target))
-  )
-    throw new Error("不能修改规划版本的来源指纹或目标。");
-  if (
-    review.planningDraft &&
-    JSON.stringify(review.planningDraft.appliedIds ?? []) !==
-      JSON.stringify(turn.review.planningDraft?.appliedIds ?? [])
-  )
-    throw new Error("不能修改规划版本的采用进度。");
-  if (
-    review.developmentDraft &&
-    (!turn.review.developmentDraft ||
-      review.developmentDraft.id !== turn.review.developmentDraft.id)
-  )
-    throw new Error("不能替换版本的设定提案。");
-  if (review.developmentDraft) {
-    for (const change of review.developmentDraft.changes) {
-      const original = turn.review.developmentDraft!.changes.find(
-        (c) => c.id === change.id,
-      );
-      if (
-        !original ||
-        original.base !== change.base ||
-        JSON.stringify(original.sources) !== JSON.stringify(change.sources)
-      )
-        throw new Error("不能修改设定建议的来源与指纹。");
+  validateRequest(repo, r);
+  let history: ChatMessage[] = [],
+    omitted: string[] = [];
+  if (r.conversationId) {
+    const c = getConversation(repo, r.projectId, r.conversationId);
+    if (c.key !== requestKey(r))
+      throw new Error("模式、工具或目标已变化，请使用对应对话。");
+    if (r.parentTurnId) {
+      let t = getTurn(repo, r.projectId, r.parentTurnId),
+        visited = new Set<string>();
+      while (t) {
+        if (t.conversationId !== c.id || visited.has(t.id))
+          throw new Error("对话分支无效。");
+        if (t.status !== "complete" || !t.result)
+          throw new Error("只能从已完成的版本继续对话。");
+        visited.add(t.id);
+        let answer = t.result?.text || t.rawResponse;
+        if (t.result?.type === "changes") {
+          const result = t.result;
+          const set = listChangeSets(repo, r.projectId).find(
+            (s) => s.id === result.changeSetId,
+          );
+          if (set)
+            answer = JSON.stringify(
+              set.changes.map((x) => ({ target: x.target, content: x.after })),
+            );
+        }
+        history.unshift(
+          { role: "user", content: t.instruction || "请完成当前任务。" },
+          { role: "assistant", content: answer },
+        );
+        if (!t.parentTurnId) break;
+        t = getTurn(repo, r.projectId, t.parentTurnId);
+      }
     }
   }
-  turn.review = copy(review);
-  repo.db.transaction(() => {
-    writeTurn(repo, turn);
-    syncCandidate(repo, turn);
-  })();
-  return turn;
-}
-export function synchronizeCandidateEdits(
-  repo: StoryRepository,
-  projectId: string,
-  candidates: BlueprintCandidate[],
-) {
-  return repo.db.transaction(() =>
-    candidates.map((candidate) => {
-      if (!candidate.turnId || !candidate.conversationId) return candidate;
-      const turn = getTurn(repo, projectId, candidate.turnId);
-      if (turn.conversationId !== candidate.conversationId)
-        throw new Error("候选版本不属于指定对话。");
-      const review = { ...turn.review, text: candidate.content };
-      if (candidate.development && turn.review.developmentDraft)
-        review.developmentDraft = {
-          ...candidate.development,
-          appliedIds: turn.review.developmentDraft.appliedIds,
-        };
-      saveTurnReview(repo, projectId, turn.id, review);
-      return {
-        ...candidate,
-        development: review.developmentDraft ?? undefined,
-      };
-    }),
-  )();
-}
-export function recordTurnApplication(
-  repo: StoryRepository,
-  projectId: string,
-  id: string,
-  label: string,
-  review?: TurnReview,
-) {
-  const turn = applicationTurn(repo, projectId, id);
-  if (review) turn.review = copy(review);
-  turn.applied = [...new Set([...turn.applied, label])];
-  writeTurn(repo, turn);
-  syncCandidate(repo, turn);
-  return turn;
-}
-export function applicationTurn(
-  repo: StoryRepository,
-  projectId: string,
-  id: string,
-) {
-  const turn = getTurn(repo, projectId, id);
-  if (turn.status !== "complete") throw new Error("未完成的版本不能直接采用。");
-  if (turn.review.resultType === "analysis")
-    throw new Error("分析结果仅供查看、复制或继续迭代，不能直接写入。");
-  const c = getConversation(repo, projectId, turn.conversationId);
-  validateTarget(repo, projectId, c.target);
-  const invalid = conversationDetail(repo, projectId, c.id).turns.find(
-    (t) => t.id === id,
-  )?.invalidReason;
-  if (invalid) throw new Error(invalid);
-  return turn;
-}
-export function applyConversationPlanning(
-  repo: StoryRepository,
-  projectId: string,
-  id: string,
-  selectedIds: string[],
-) {
-  return repo.db.transaction(() => {
-    const turn = applicationTurn(repo, projectId, id);
-    if (!turn.review.planningDraft) throw new Error("此版本没有待采用规划。");
-    if (
-      selectedIds.some((id) =>
-        turn.review.planningDraft!.appliedIds?.includes(id),
-      )
-    )
-      throw new Error("所选规划已采用，请勿重复写入。");
-    const detail = applyPlanning(repo, turn.review.planningDraft, selectedIds);
-    const base = planningBase(repo, projectId);
-    turn.review.planningDraft = {
-      ...turn.review.planningDraft,
-      base,
-      appliedIds: [
-        ...(turn.review.planningDraft.appliedIds ?? []),
-        ...selectedIds,
-      ],
-    };
-    turn.review.text = reviewText(turn.review);
-    recordTurnApplication(repo, projectId, id, "已采用所选规划", turn.review);
-    return { detail, base };
-  })();
-}
-export function applyConversationDevelopment(
-  repo: StoryRepository,
-  projectId: string,
-  id: string,
-  selectedIds: string[],
-) {
-  return repo.db.transaction(() => {
-    const turn = applicationTurn(repo, projectId, id);
-    if (!turn.review.developmentDraft) throw new Error("此版本没有设定提案。");
-    const result = applyDevelopment(
-      repo,
-      projectId,
-      turn.review.developmentDraft,
-      selectedIds,
-    );
-    turn.review.developmentDraft = result.draft;
-    turn.review.text = developmentText(result.draft);
-    turn.undoId = result.undoId;
-    writeTurn(repo, turn);
-    recordTurnApplication(repo, projectId, id, "已更新设定与蓝图", turn.review);
-    return result;
-  })();
-}
-export function undoConversationDevelopment(
-  repo: StoryRepository,
-  projectId: string,
-  undoId: string,
-) {
-  return repo.db.transaction(() => {
-    const result = undoDevelopment(repo, projectId, undoId);
-    for (const row of repo.db
-      .prepare("SELECT payload FROM creation_turns WHERE project_id = ?")
-      .all(projectId) as { payload: string }[]) {
-      const turn = JSON.parse(row.payload) as CreationTurn;
-      if (turn.review.developmentDraft?.id !== result.draft.id) continue;
-      turn.review.developmentDraft = result.draft;
-      turn.review.text = developmentText(result.draft);
-      turn.applied = turn.applied.filter(
-        (label) => label !== "已更新设定与蓝图",
+  // Preserve complete recent pairs; remove oldest whole pairs only.
+  while (
+    history.length &&
+    estimatedTokens(history) > Math.floor(opts.capabilities.contextTokens / 3)
+  ) {
+    history.splice(0, 2);
+    omitted.push("较早的一轮对话");
+  }
+  const instruction =
+    r.kind === "brainstorm"
+      ? ""
+      : history.length
+        ? "\n基于所选结果和本轮要求继续；有修改时输出目标的完整新稿。"
+        : "";
+  const req = { ...r, instruction: r.instruction + instruction };
+  let preview;
+  for (;;) {
+    try {
+      preview = await buildContext(
+        repo,
+        req,
+        opts,
+        [contract(r), extra].filter(Boolean).join("\n\n"),
+        history,
       );
-      if (result.draft.appliedIds.length) turn.applied.push("已更新设定与蓝图");
-      delete turn.undoId;
-      writeTurn(repo, turn);
-      syncCandidate(repo, turn);
+      break;
+    } catch (e) {
+      if (history.length && (e as Error).message.includes("上下文预算")) {
+        history.splice(0, 2);
+        omitted.push("较早的一轮对话");
+      } else throw e;
     }
-    return { ...result, detail: repo.getDetail(projectId) };
-  })();
+  }
+  preview.omitted.push(...omitted);
+  return preview;
 }
-export function applyConversationMemory(
+interface CheckJob {
+  title: string;
+  chapterIds: string[];
+  extra: string;
+}
+function checkJobs(
+  d: ProjectDetail,
+  r: Extract<TaskRequest, { kind: "check" }>,
+): CheckJob[] {
+  const ids =
+    r.scope.type === "book"
+      ? d.chapters.map((c) => c.id)
+      : r.scope.type === "current"
+        ? [r.scope.chapterId]
+        : r.scope.chapterIds;
+  const chapters = d.chapters.filter((c) => ids.includes(c.id));
+  const output =
+    '只输出JSON：{"findings":[{"category":"conflict|question|suggestion","chapterId":"引用所属章节ID","quote":"准确原文引用","reference":"依据来源及位置","impact":"影响","suggestion":"建议"}]}。没有发现时返回空数组。';
+  const body = (c: ProjectDetail["chapters"][number]) =>
+    `【完整正文 ${c.title} [${c.id}]；来源版本 ${fingerprint(c.document)}】\n${c.content}`;
+  const jobs: CheckJob[] = chapters.map((c) => ({
+    title: "本章检查：" + c.title,
+    chapterIds: [c.id],
+    extra: `方向：${r.aspect}；关注人物：${r.character || "未指定"}\n${body(c)}\n${output}`,
+  }));
+  if (r.aspect !== "pacing")
+    for (let i = 0; i < chapters.length; i++)
+      for (let j = i + 1; j < chapters.length; j++) {
+        const a = chapters[i],
+          b = chapters[j];
+        jobs.push({
+          title: `跨章检查：${a.title} / ${b.title}`,
+          chapterIds: [a.id, b.id],
+          extra: `只检查跨章${r.aspect}问题；关注人物：${r.character || "未指定"}。对照完整两章，不重复本章问题。\n${body(a)}\n${body(b)}\n${output}`,
+        });
+      }
+  return jobs;
+}
+export async function prepareTaskPreview(
   repo: StoryRepository,
-  projectId: string,
-  id: string,
-) {
-  return repo.db.transaction(() => {
-    const turn = applicationTurn(repo, projectId, id);
-    const c = getConversation(repo, projectId, turn.conversationId);
-    if (turn.applied.includes("已写入故事记忆"))
-      throw new Error("此版本的记忆已经写入，请勿重复采用。");
-    if (
-      !c.target.chapterId ||
-      !turn.review.memoryRecords?.length ||
-      !turn.review.memoryRevisionId
+  r: TaskRequest,
+  opts: ContextOptions,
+): Promise<TaskPreview> {
+  const d = validateRequest(repo, r),
+    foundation = await prepareConversationTask(repo, r, opts);
+  if (r.kind !== "check") return foundation;
+  const batches: NonNullable<TaskPreview["batches"]> = [];
+  for (const job of checkJobs(d, r)) {
+    try {
+      batches.push({
+        title: job.title,
+        preview: await prepareConversationTask(repo, r, opts, job.extra),
+      });
+    } catch (e) {
+      batches.push({ title: job.title, error: (e as Error).message });
+    }
+  }
+  return {
+    ...foundation,
+    messages: [],
+    estimatedTokens: Math.max(
+      foundation.estimatedTokens,
+      ...batches.map((b) => b.preview?.estimatedTokens ?? 0),
+    ),
+    batches,
+  };
+}
+const findingSchema = z
+  .object({
+    category: z.enum(["conflict", "question", "suggestion"]),
+    chapterId: z.string(),
+    quote: z.string().min(1),
+    reference: z.string().min(1),
+    impact: z.string().min(1),
+    suggestion: z.string().min(1),
+  })
+  .strict();
+async function checkStory(
+  d: ProjectDetail,
+  r: Extract<TaskRequest, { kind: "check" }>,
+  preview: TaskPreview,
+  opts: RunOptions,
+  onDelta: (s: string) => void,
+): Promise<TaskResult> {
+  const jobs = checkJobs(d, r),
+    batches: CheckBatch[] = [],
+    comparisons: import("../shared/types").CheckReport["comparisons"] = [];
+  for (const [i, job] of jobs.entries()) {
+    if (opts.signal.aborted) throw new Error("已停止检查。");
+    const cross = job.chapterIds.length === 2,
+      c = d.chapters.find((c) => c.id === job.chapterIds[0])!;
+    try {
+      const p = preview.batches![i];
+      if (!p.preview) throw new Error(p.error || "请求构建失败。");
+      const raw = await opts.generate(p.preview.messages, () => {});
+      if (opts.signal.aborted) throw new Error("已停止检查。");
+      const findings = z
+        .object({ findings: z.array(findingSchema).max(100) })
+        .strict()
+        .parse(json(raw)).findings;
+      for (const f of findings) {
+        const source = d.chapters.find((c) => c.id === f.chapterId);
+        if (
+          !source ||
+          !job.chapterIds.includes(f.chapterId) ||
+          !source.content.includes(f.quote)
+        )
+          throw new Error("检查引用无法在来源正文中核对。");
+      }
+      if (cross) {
+        comparisons.push({ chapterIds: job.chapterIds, status: "complete" });
+        for (const f of findings)
+          batches.find((b) => b.chapterId === f.chapterId)!.findings.push(f);
+      } else
+        batches.push({
+          chapterId: c.id,
+          title: c.title,
+          sourceVersion: fingerprint(c.document),
+          status: "complete",
+          findings,
+        });
+      onDelta(`完成 ${i + 1}/${jobs.length}：${job.title}\n`);
+    } catch (e) {
+      if (opts.signal.aborted) throw e;
+      const error = (e as Error).message;
+      if (cross)
+        comparisons.push({
+          chapterIds: job.chapterIds,
+          status: "failed",
+          error,
+        });
+      else
+        batches.push({
+          chapterId: c.id,
+          title: c.title,
+          sourceVersion: fingerprint(c.document),
+          status: "failed",
+          error,
+          findings: [],
+        });
+      onDelta(`失败 ${i + 1}/${jobs.length}：${job.title}（${error}）\n`);
+    }
+  }
+  const complete =
+    batches.every((b) => b.status === "complete") &&
+    comparisons.every((c) => c.status === "complete");
+  const failed = comparisons
+    .filter((c) => c.status === "failed")
+    .map(
+      (c) =>
+        `跨章检查未完成：${c.chapterIds.map((id) => d.chapters.find((c) => c.id === id)!.title).join(" / ")}（${c.error}）`,
     )
-      throw new Error("此版本没有待审核记忆。");
-    const count = repo.saveGeneratedMemories(
-      c.target.chapterId,
-      turn.review.memoryRevisionId,
-      turn.review.memoryRecords,
-    );
-    recordTurnApplication(repo, projectId, id, "已写入故事记忆", turn.review);
-    return count;
-  })();
+    .join("\n");
+  const summary = `${complete ? "检查完成" : "检查部分完成"}：${batches.filter((b) => b.status === "complete").length}/${batches.length}章；跨章 ${comparisons.filter((c) => c.status === "complete").length}/${comparisons.length}组；${batches.reduce((n, b) => n + b.findings.length, 0)}条发现。\n${failed}`;
+  const text =
+    summary +
+    "\n" +
+    batches
+      .map(
+        (b) =>
+          `## ${b.title} [${b.chapterId}]\n${b.status === "failed" ? b.error + "\n" : ""}${b.findings.map((f) => `- [${f.category}]「${f.quote}」\n依据：${f.reference}\n影响：${f.impact}\n建议：${f.suggestion}`).join("\n") || (b.status === "complete" ? "未发现具体问题。" : "本章未完成检查。")}`,
+      )
+      .join("\n\n");
+  return {
+    type: "report",
+    text,
+    report: { aspect: r.aspect, batches, comparisons, summary, complete },
+  };
+}
+export interface RunOptions extends ContextOptions {
+  signal: AbortSignal;
+  generate: (
+    messages: ChatMessage[],
+    delta: (s: string) => void,
+  ) => Promise<string>;
+  progress: (e: ProgressEvent) => void;
+}
+export async function runCreationTask(
+  repo: StoryRepository,
+  input: TaskRequest,
+  opts: RunOptions,
+) {
+  const r = requestSchema.parse(input) as TaskRequest,
+    d = validateRequest(repo, r);
+  const c = r.conversationId
+    ? getConversation(repo, r.projectId, r.conversationId)
+    : createConversation(repo, r);
+  if (c.key !== requestKey(r)) throw new Error("对话目标不匹配。");
+  r.conversationId = c.id;
+  const initialBasis = basis(repo, r.projectId),
+    turns = conversationDetail(repo, r.projectId, c.id).turns;
+  const t: CreationTurn = {
+    id: randomUUID(),
+    projectId: r.projectId,
+    conversationId: c.id,
+    number: turns.length + 1,
+    parentTurnId: r.parentTurnId ?? null,
+    instruction: r.instruction,
+    status: "generating",
+    rawResponse: "",
+    result: null,
+    sourceSnapshot: [],
+    error: "",
+    model: opts.model,
+    createdAt: new Date().toISOString(),
+  };
+  writeTurn(repo, t);
+  c.selectedTurnId = t.id;
+  writeConversation(repo, c);
+  const delta = (s: string) => {
+    t.rawResponse += s;
+    writeTurn(repo, t);
+    opts.progress({
+      requestId: r.requestId,
+      delta: s,
+      conversationId: c.id,
+      turnId: t.id,
+    });
+  };
+  try {
+    let result: TaskResult;
+    const preview = await prepareTaskPreview(repo, r, opts);
+    if (basis(repo, r.projectId) !== initialBasis)
+      throw new Error("构建请求时基础资料发生变化，请重新生成。");
+    t.sourceSnapshot = [preview];
+    writeTurn(repo, t);
+    if (r.kind === "check")
+      result = await checkStory(d, r, preview, opts, delta);
+    else {
+      const raw = await opts.generate(preview.messages, delta);
+      if (opts.signal.aborted) throw new Error("生成已停止。");
+      if (!raw.trim()) throw new Error("模型没有返回内容。");
+      if (r.kind === "brainstorm") result = { type: "chat", text: raw };
+      else if (r.kind === "prompt")
+        result = { type: "illustration", text: raw };
+      else {
+        const set = buildChangeSet(
+          d,
+          r,
+          raw,
+          { conversationId: c.id, turnId: t.id },
+          initialBasis,
+        );
+        result = { type: "changes", text: raw, changeSetId: set.id };
+        // Complete result and candidate persist together.
+        t.result = result;
+        t.status = "complete";
+        repo.db.transaction(() => {
+          saveChangeSet(repo, set);
+          writeTurn(repo, t);
+        })();
+        return { conversationId: c.id, turnId: t.id, result };
+      }
+    }
+    if (opts.signal.aborted) throw new Error("生成已停止。");
+    t.result = result;
+    t.status = "complete";
+    writeTurn(repo, t);
+    return { conversationId: c.id, turnId: t.id, result };
+  } catch (e) {
+    t.status = opts.signal.aborted ? "stopped" : "error";
+    t.error = (e as Error).message;
+    writeTurn(repo, t);
+    throw e;
+  }
 }
 export function conversationHandlers(
   repo: StoryRepository,
-): Record<string, (p: unknown) => unknown> {
+): Record<string, (p: any) => unknown> {
   return {
     "conversation:list": (p) =>
       listConversations(repo, z.string().uuid().parse(p)),
-    "conversation:get": (p) => {
-      const v = identity.parse(p);
-      return conversationDetail(repo, v.projectId, v.id);
+    "conversation:get": (p) =>
+      conversationDetail(
+        repo,
+        z.string().uuid().parse(p.projectId),
+        z.string().uuid().parse(p.id),
+      ),
+    "conversation:create": (p) =>
+      createConversation(repo, requestSchema.parse(p) as TaskRequest),
+    "conversation:select": (p) => {
+      const c = getConversation(repo, p.projectId, p.id),
+        t = getTurn(repo, p.projectId, p.turnId);
+      if (t.conversationId !== c.id) throw new Error("版本不属于此对话。");
+      c.selectedTurnId = t.id;
+      writeConversation(repo, c);
+      return conversationDetail(repo, c.projectId, c.id);
     },
-    "conversation:create": (p) => {
-      const v = z
-        .object({
-          projectId: z.string().uuid(),
-          target: conversationTargetSchema,
-          title: z.string().trim().min(1).max(200).optional(),
-        })
-        .parse(p);
-      return createConversation(repo, v.projectId, v.target, v.title);
-    },
-    "conversation:update": (p) => {
-      const v = identity
-        .extend({
-          title: z.string().trim().min(1).max(200).optional(),
-          selectedTurnId: z.string().uuid().nullable().optional(),
-          draftInstruction: z.string().max(200_000).optional(),
-        })
-        .parse(p);
-      const c = getConversation(repo, v.projectId, v.id);
-      if (
-        v.selectedTurnId &&
-        getTurn(repo, v.projectId, v.selectedTurnId).conversationId !== c.id
-      )
-        throw new Error("版本不属于此对话。");
-      if (v.title !== undefined) {
-        c.title = v.title;
-        c.autoTitle = false;
-      }
-      if (v.selectedTurnId !== undefined) c.selectedTurnId = v.selectedTurnId;
-      if (v.draftInstruction !== undefined)
-        c.draftInstruction = v.draftInstruction;
-      c.updatedAt = now();
+    "conversation:rename": (p) => {
+      const c = getConversation(repo, p.projectId, p.id);
+      c.title = z.string().trim().min(1).max(200).parse(p.title);
       writeConversation(repo, c);
       return c;
     },
-    "conversation:delete": (p) => {
-      const v = identity.parse(p);
-      const c = getConversation(repo, v.projectId, v.id);
-      if (
-        conversationDetail(repo, v.projectId, v.id).turns.some(
-          (t) => t.status === "generating",
-        )
-      )
-        throw new Error("请先停止当前对话的生成。");
+    "conversation:delete": (p) =>
       repo.db.transaction(() => {
-        const project = repo.getProject(v.projectId);
-        repo.updateProject(v.projectId, {
-          blueprintCandidates: project.blueprintCandidates.map((candidate) =>
-            candidate.conversationId === c.id
-              ? { ...candidate, conversationId: undefined, turnId: undefined }
-              : candidate,
-          ),
-        });
+        const c = getConversation(repo, p.projectId, p.id);
+        if (
+          conversationDetail(repo, c.projectId, c.id).turns.some(
+            (t) => t.status === "generating",
+          )
+        )
+          throw new Error("对话仍在生成，请先停止生成。");
         repo.db
           .prepare("DELETE FROM creation_turns WHERE conversation_id = ?")
           .run(c.id);
         repo.db
           .prepare("DELETE FROM creation_conversations WHERE id = ?")
           .run(c.id);
-      })();
-      return true;
-    },
-    "conversation:save-turn": (p) => {
-      const v = identity.extend({ review: turnReviewSchema }).parse(p);
-      return saveTurnReview(repo, v.projectId, v.id, v.review);
-    },
-    "conversation:applied": (p) => {
-      const v = identity.extend({ label: z.string().max(200) }).parse(p);
-      return recordTurnApplication(repo, v.projectId, v.id, v.label);
-    },
-    "conversation:check-application": (p) => {
-      const v = identity.parse(p);
-      applicationTurn(repo, v.projectId, v.id);
-      return true;
-    },
+        return true;
+      })(),
   };
-}
-
-export function prepareConversationTask(
-  repo: StoryRepository,
-  input: TaskRequest,
-) {
-  const request = copy(input);
-  let conversation: CreationConversation | undefined;
-  let parent: CreationTurn | undefined;
-  if (request.conversationId) {
-    conversation = getConversation(
-      repo,
-      request.projectId,
-      request.conversationId,
-    );
-    if (
-      targetKey(conversation.target) !== targetKey(conversationTarget(request))
-    )
-      throw new Error("工具或目标已变化，请切换到对应对话。");
-    validateTarget(repo, request.projectId, conversation.target);
-    if (!conversation.workflowContext && request.workflowContext)
-      conversation.workflowContext = request.workflowContext;
-    request.workflowContext = conversation.workflowContext;
-    if (request.parentTurnId) {
-      parent = getTurn(repo, request.projectId, request.parentTurnId);
-      if (parent.conversationId !== conversation.id)
-        throw new Error("父版本不属于当前对话。");
-      if (parent.status === "generating")
-        throw new Error("请等待父版本生成结束。");
-    }
-    if (!conversation.source) {
-      const chapter = request.chapterId
-        ? repo.getChapter(request.chapterId)
-        : undefined;
-      conversation.source = {
-        content: chapter?.content ?? "",
-        selection: request.selectionRange,
-        memoryRevisionId:
-          request.kind === "notes"
-            ? (chapter?.acceptedRevisionId ?? undefined)
-            : undefined,
-      };
-    }
-    if (conversation.source.selection)
-      request.selection = conversation.source.selection.text;
-  } else if (request.parentTurnId) throw new Error("继续生成需要指定对话。");
-  const polish = ["revise", "scene", "dialogue"].includes(request.kind);
-  const built = buildTask(
-    repo,
-    request,
-    conversation
-      ? {
-          content: polish ? conversation.source!.content : undefined,
-          memoryRevisionId:
-            request.kind === "notes"
-              ? conversation.source!.memoryRevisionId
-              : undefined,
-        }
-      : undefined,
-  );
-  let history: { role: "user" | "assistant"; content: string }[] = [];
-  let omittedTurns = 0;
-  if (parent) {
-    // The parent stores the exact branch context used for its own generation.
-    // Reuse those messages as immutable snapshots, then use the parent's
-    // current editable review as the selected complete version.
-    const full = [
-      ...copy(parent.history),
-      {
-        role: "user" as const,
-        content: parent.instruction || "请按当前资料完成任务。",
-      },
-      { role: "assistant" as const, content: reviewText(parent.review) },
-    ];
-    const root = full[0];
-    const lastPair = full.slice(-2);
-    let size =
-      (root === lastPair[0] ? 0 : root.content.length) +
-      lastPair.reduce((n, m) => n + m.content.length, 0) +
-      request.instruction.length;
-    if (size > 60_000)
-      throw new Error(
-        "所选完整稿与必需要求超过 60,000 字符，请精简版本或要求后继续。",
-      );
-    const previous: typeof full = [];
-    for (let i = full.length - 3; i >= 1;) {
-      const start =
-        full[i].role === "assistant" && i > 1 && full[i - 1].role === "user"
-          ? i - 1
-          : i;
-      const group = full.slice(start, i + 1);
-      const length = group.reduce((n, m) => n + m.content.length, 0);
-      i = start - 1;
-      if (size + length > 60_000) {
-        omittedTurns++;
-        continue;
-      }
-      previous.unshift(...group);
-      size += length;
-    }
-    // Keep the first requirement even when old answer pairs no longer fit.
-    history = full.length === 2 ? full : [root, ...previous, ...lastPair];
-    const marker = "【本次作者要求】";
-    const context = built.messages[1].content;
-    built.messages = [
-      built.messages[0],
-      {
-        role: "user",
-        content:
-          context.slice(0, context.lastIndexOf(marker)).trim() +
-          "\n\n【以下对话均为待审核候选，不能视为正式设定、规划或已发生事实】",
-      },
-      ...history,
-      {
-        role: "user",
-        content: `【本轮修改要求】\n${request.instruction.trim() || "请完善所选版本。"}\n基于所选版本输出一份完整新版，保留仍适用的内容；不输出差异补丁。`,
-      },
-    ];
-  }
-  return { request, conversation, parent, built, history, omittedTurns };
-}
-
-export function parseTaskResult(
-  repo: StoryRepository,
-  request: TaskRequest,
-  built: ReturnType<typeof buildTask>,
-  text: string,
-  base: string,
-): TaskResult {
-  if (request.planningTarget)
-    return {
-      text,
-      planningDraft: parsePlanning(
-        repo,
-        request.projectId,
-        request.planningTarget,
-        base,
-        text,
-      ),
-      resultType: "planning",
-    };
-  if (request.kind === "notes") {
-    const records = parseMemories(text);
-    return {
-      text: records.map((r) => `- [${r.kind}] ${r.content}`).join("\n\n"),
-      memoryRecords: records,
-      memoryRevisionId: built.revisionId,
-    };
-  }
-  if (request.kind === "develop") {
-    const draft = parseDevelopment(text, built.developmentSnapshot!);
-    return { text: developmentText(draft), developmentDraft: draft };
-  }
-  return {
-    text,
-    resultType:
-      request.outputMode === "analysis" ||
-      ["check", "pacing", "arc"].includes(request.kind)
-        ? "analysis"
-        : ["revise", "scene", "dialogue"].includes(request.kind) &&
-            request.outputMode === "rewrite"
-          ? "rewrite"
-          : toolInfo[request.kind].output === "prose"
-            ? "prose"
-            : undefined,
-  };
-}
-
-export async function runCreationTask(
-  repo: StoryRepository,
-  request: TaskRequest,
-  options: {
-    model: string;
-    signal: AbortSignal;
-    generate: (
-      messages: ChatMessage[],
-      delta: (text: string) => void,
-    ) => Promise<string>;
-    progress: (event: ProgressEvent) => void;
-  },
-): Promise<TaskResult> {
-  const prepared = prepareConversationTask(repo, request);
-  const { conversation, built } = prepared;
-  const base = request.planningTarget
-    ? planningBase(repo, request.projectId)
-    : "";
-  let turn: CreationTurn | undefined;
-  if (conversation) {
-    if (
-      conversationDetail(repo, request.projectId, conversation.id).turns.some(
-        (t) => t.status === "generating",
-      )
-    )
-      throw new Error("此对话已有正在生成的版本。");
-    const number =
-      conversationDetail(repo, request.projectId, conversation.id).turns
-        .length + 1;
-    turn = {
-      id: randomUUID(),
-      conversationId: conversation.id,
-      projectId: request.projectId,
-      number,
-      parentTurnId: prepared.parent?.id ?? null,
-      instruction: request.instruction,
-      status: "generating",
-      rawResponse: "",
-      result: { text: "" },
-      review: { text: "" },
-      sourceContent: ["revise", "scene", "dialogue"].includes(request.kind)
-        ? conversation.source!.content
-        : request.kind === "notes"
-          ? conversation.source!.content
-          : prepared.parent
-            ? reviewText(prepared.parent.review)
-            : request.chapterId
-              ? repo.getChapter(request.chapterId).content
-              : "",
-      selection: conversation.source!.selection,
-      history: prepared.history,
-      applied: [],
-      error: "",
-      model: options.model,
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    repo.db.transaction(() => {
-      repo.db
-        .prepare("INSERT INTO creation_turns VALUES (?, ?, ?, ?)")
-        .run(
-          turn!.id,
-          conversation.id,
-          request.projectId,
-          JSON.stringify(turn),
-        );
-      conversation.selectedTurnId = turn!.id;
-      conversation.draftInstruction = "";
-      conversation.updatedAt = now();
-      if (number === 1 && conversation.autoTitle && request.instruction.trim())
-        conversation.title = request.instruction.trim().slice(0, 40);
-      conversation.autoTitle = false;
-      writeConversation(repo, conversation);
-    })();
-  }
-  let received = "",
-    lastSaved = Date.now(),
-    timer: ReturnType<typeof setTimeout> | undefined,
-    persistenceError: unknown;
-  const savePartial = () => {
-    if (turn) {
-      turn.rawResponse = received;
-      turn.review.text = received;
-      writeTurn(repo, turn);
-      lastSaved = Date.now();
-    }
-  };
-  try {
-    const text = await options.generate(built.messages, (delta) => {
-      received += delta;
-      if (turn) {
-        if (persistenceError) throw persistenceError;
-        if (Date.now() - lastSaved >= 650) {
-          clearTimeout(timer);
-          timer = undefined;
-          savePartial();
-        } else if (!timer)
-          timer = setTimeout(() => {
-            timer = undefined;
-            try {
-              savePartial();
-            } catch (error) {
-              persistenceError = error;
-            }
-          }, 650);
-      }
-      options.progress({
-        requestId: request.requestId,
-        delta,
-        ...(turn
-          ? { conversationId: turn.conversationId, turnId: turn.id }
-          : {}),
-      });
-    });
-    received = text;
-    if (persistenceError) throw persistenceError;
-    if (options.signal.aborted)
-      throw new Error("生成已停止，收到的内容已保留。");
-    const result = parseTaskResult(repo, prepared.request, built, text, base);
-    if (turn) {
-      clearTimeout(timer);
-      turn.status = "complete";
-      turn.rawResponse = text;
-      turn.result = resultReview(result);
-      turn.review = copy(turn.result);
-      repo.db.transaction(() => {
-        writeTurn(repo, turn!);
-        if (toolInfo[request.kind].candidate && !result.planningDraft) {
-          const project = repo.getProject(request.projectId);
-          repo.updateProject(request.projectId, {
-            blueprintCandidates: [
-              {
-                id: randomUUID(),
-                title: `版本 ${turn!.number} · ${conversation!.title}`,
-                content: result.text,
-                source: request.kind,
-                createdAt: now(),
-                development: result.developmentDraft,
-                conversationId: turn!.conversationId,
-                turnId: turn!.id,
-              },
-              ...project.blueprintCandidates,
-            ].slice(0, 100),
-          });
-        }
-      })();
-      return {
-        ...result,
-        conversationId: turn.conversationId,
-        turnId: turn.id,
-      };
-    }
-    return result;
-  } catch (error) {
-    clearTimeout(timer);
-    if (turn) {
-      turn.status = options.signal.aborted ? "stopped" : "error";
-      turn.error = error instanceof Error ? error.message : String(error);
-      turn.rawResponse = received;
-      turn.review.text = received;
-      turn.result = copy(turn.review);
-      try {
-        writeTurn(repo, turn);
-      } catch {
-        /* Keep prior committed versions and propagate the save failure. */
-      }
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
 }

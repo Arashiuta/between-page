@@ -1,6 +1,6 @@
 {
   "name": "between-pages",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "页间 · OC 故事创作工作台",
   "main": "./out/main/index.js",
   "author": "Between Pages",
@@ -18,8 +18,11 @@
     "format": "prettier --write src tests *.ts *.json README.md"
   },
   "dependencies": {
+    "@tiptap/core": "^3.32.2",
+    "@tiptap/pm": "^3.32.2",
     "@tiptap/starter-kit": "^3.7.2",
     "@tiptap/vue-3": "^3.7.2",
+    "diff": "^9.0.0",
     "lucide-vue-next": "^0.468.0",
     "naive-ui": "^2.43.1",
     "pinia": "^3.0.3",

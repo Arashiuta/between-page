@@ -137,9 +137,7 @@ watch(filter, () => {
             {{
               card.description ||
               card.sections.map((section) => section.title).join("、") ||
-              (card.documents.length
-                ? `${card.documents.length} 份原始文档`
-                : "暂无描述")
+              "暂无描述"
             }}
           </p>
           <div class="asset-card-footer">
@@ -154,14 +152,6 @@ watch(filter, () => {
               @edit="open(card)"
               @action="requestDelete(card)"
             />
-            <button
-              class="text-button asset-card-delete"
-              :aria-label="`删除创作资料「${card.name}」`"
-              :disabled="deleting"
-              @click.stop="requestDelete(card)"
-            >
-              <Trash2 :size="14" />删除
-            </button>
           </div>
         </div>
       </article>
@@ -193,7 +183,9 @@ watch(filter, () => {
         }}
       </button>
     </div>
-    <p class="page-footer">每个故事使用独立的资料副本，修改互不影响。</p>
+    <p class="page-footer">
+      引入故事的资料为独立只读副本；资料库更新后可重新引入。
+    </p>
     <NDropdown
       trigger="manual"
       placement="bottom-start"
@@ -214,7 +206,7 @@ watch(filter, () => {
       preset="dialog"
       type="error"
       title="删除创作资料？"
-      :content="`确定删除「${cardToDelete?.name || ''}」？资料内容、分区和原始文档将一并删除。已复制到故事中的资料副本和参考图片会保留。此操作无法撤销。`"
+      :content="`确定删除「${cardToDelete?.name || ''}」？资料内容和分区将一并删除。已引入故事的资料副本和参考图片会保留。此操作无法撤销。`"
       positive-text="确认删除"
       negative-text="取消"
       :positive-button-props="{ type: 'error', loading: deleting }"

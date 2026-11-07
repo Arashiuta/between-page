@@ -111,6 +111,7 @@ export function settings(repo: StoryRepository, dataDir: string): Settings {
         ),
         repo.getSetting(`${kind}.availableModels`, []),
       ),
+      capabilities: repo.getSetting(`${kind}.capabilities`, {}),
       key,
       hasKey: !!key.trim(),
     };
@@ -155,6 +156,14 @@ export function saveSettings(
     model: z.string().trim().max(500),
     selectedModels: z.array(modelName).max(200),
     availableModels: z.array(modelName).max(3200),
+    capabilities: z.record(
+      z.string(),
+      z.object({
+        vision: z.boolean(),
+        contextTokens: z.number().int().min(4096).max(10000000),
+        outputTokens: z.number().int().min(256).max(200000),
+      }),
+    ),
   });
   const value = z
     .object({
@@ -176,6 +185,7 @@ export function saveSettings(
       repo.setSetting(`${kind}.model`, selection.model);
       repo.setSetting(`${kind}.selectedModels`, selection.selectedModels);
       repo.setSetting(`${kind}.availableModels`, selection.availableModels);
+      repo.setSetting(`${kind}.capabilities`, config.capabilities);
       saveKey(repo, kind, config.key);
     }
     repo.setSetting("image.size", value.imageSize);

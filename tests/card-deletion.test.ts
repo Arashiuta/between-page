@@ -36,7 +36,6 @@ function setup(kind: CardKind = "character") {
         id: randomUUID(),
         title: "资料分区",
         content: "分区正文",
-        alwaysInclude: true,
         sourceIds: [documentId],
       },
     ],
@@ -100,10 +99,16 @@ describe("创作资料删除", () => {
     "删除故事内 %s 副本时保留资料库、其他故事、正文、记忆和图片",
     (kind) => {
       const { repo, source, sameName, project, copy, image } = setup(kind);
-      const other = repo.createProject({ title: "另一个故事", premise: "", mode: "explore" });
+      const other = repo.createProject({
+        title: "另一个故事",
+        premise: "",
+        mode: "explore",
+      });
       const otherCopy = repo.copyCard(source.id, other.id);
       const chapter = repo.getDetail(project.id).chapters[0];
-      repo.updateChapter(chapter.id, { document: textToDocument("已经写下的角色经历。") });
+      repo.updateChapter(chapter.id, {
+        document: textToDocument("已经写下的角色经历。"),
+      });
       repo.adoptChapter(chapter.id);
       repo.addMemory(project.id, "fact", "角色曾在此停留。");
       const before = repo.getDetail(project.id);
@@ -113,7 +118,9 @@ describe("创作资料删除", () => {
       expect(after.cards).toEqual([]);
       expect(after.chapters).toEqual(before.chapters);
       expect(after.memories).toEqual(before.memories);
-      expect(repo.listCards()).toEqual(expect.arrayContaining([source, sameName]));
+      expect(repo.listCards()).toEqual(
+        expect.arrayContaining([source, sameName]),
+      );
       expect(repo.getDetail(other.id).cards).toEqual([otherCopy]);
       expect(repo.getImage(image.id)).toEqual(image);
     },

@@ -1,16 +1,23 @@
-import { describe, expect, it } from "vitest";
-import { defaultRoleSettings, roleDefinitions, rolePrompt } from "../src/shared/roles";
-
-describe("AI 职责输出契约", () => {
-  it("每项职责都要求直接从任务产物开始", () => {
-    const settings = defaultRoleSettings();
-    for (const role of roleDefinitions)
-      expect(rolePrompt(settings, role.id)).toContain("不要使用“收到”“好的”“以下是”“当然可以”等确认、寒暄或导语");
+import { describe, it, expect } from "vitest";
+import {
+  defaultRoleSettings,
+  rolePrompt,
+  foundationPolicy,
+} from "../src/shared/roles";
+import { modeTools } from "../src/shared/tools";
+import { taskKinds } from "../src/shared/types";
+describe("职责与模式规则", () => {
+  it.each(taskKinds)("%s 自定义要求之后仍有不可省略的故事依据规则", (kind) => {
+    const roles = defaultRoleSettings();
+    roles.commonPrompt = "自定义";
+    roles.roles.find((r) => r.id === kind)!.prompt = "作者工作要求";
+    const p = rolePrompt(roles, kind);
+    expect(p).toContain("作者工作要求");
+    expect(p.endsWith(foundationPolicy)).toBe(true);
   });
-
-  it("记忆与资料整理仍保留机器读取的 JSON 格式", () => {
-    const settings = defaultRoleSettings();
-    expect(rolePrompt(settings, "notes")).toContain('仅输出 JSON：{"records"');
-    expect(rolePrompt(settings, "material")).toContain('仅输出 JSON：{"name"');
-  });
+  it.each(taskKinds)("%s 在两种模式有不同工作要求", (kind) =>
+    expect(modeTools.explore.prompts[kind]).not.toBe(
+      modeTools.novel.prompts[kind],
+    ),
+  );
 });

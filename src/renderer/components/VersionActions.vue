@@ -3,7 +3,7 @@ import { ref } from "vue";
 import { NModal, NInput, NButton } from "naive-ui";
 import ItemActions from "./ItemActions.vue";
 import { useWorkspace } from "../stores/workspace";
-const props = defineProps<{ id: string; label: string; planning?: boolean }>();
+const props = defineProps<{ id: string; label: string }>();
 const emit = defineEmits<{ changed: [deletedId?: string] }>();
 const store = useWorkspace();
 const mode = ref<"edit" | "delete" | null>(null),
@@ -13,7 +13,7 @@ const mode = ref<"edit" | "delete" | null>(null),
 async function open(value: "edit" | "delete") {
   await store.flush();
   usage.value =
-    value === "delete" && !props.planning
+    value === "delete"
       ? await store.api("revision:usage", {
           projectId: store.detail!.project.id,
           id: props.id,
@@ -28,14 +28,11 @@ async function save() {
   try {
     await store.flush();
     const deleting = mode.value === "delete";
-    await store.api(
-      `${props.planning ? "planning:version" : "revision"}:${deleting ? "delete" : "update"}`,
-      {
-        projectId: store.detail!.project.id,
-        [props.planning ? "versionId" : "id"]: props.id,
-        ...(!deleting ? { label: label.value.trim() } : {}),
-      },
-    );
+    await store.api(`revision:${deleting ? "delete" : "update"}`, {
+      projectId: store.detail!.project.id,
+      id: props.id,
+      ...(!deleting ? { label: label.value.trim() } : {}),
+    });
     mode.value = null;
     emit("changed", deleting ? props.id : undefined);
     store.notify(deleting ? "已删除无引用的历史版本。" : "版本标签已更新。");

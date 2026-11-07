@@ -1,979 +1,625 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   NButton,
-  NDrawer,
-  NDrawerContent,
   NInput,
   NSelect,
-  NCheckbox,
+  NInputNumber,
+  NModal,
   NPopconfirm,
 } from "naive-ui";
-import {
-  AlertCircle,
-  ArrowUpRight,
-  BookOpen,
-  CheckCircle2,
-  CornerDownLeft,
-  FileText,
-  Image as ImageIcon,
-  LoaderCircle,
-  Maximize2,
-  Minimize2,
-  Play,
-  Square,
-} from "lucide-vue-next";
-import { effectiveRole, roleDefinitions } from "../../shared/roles";
 import { useWorkspace } from "../stores/workspace";
-import { toolInfo, toolGroups, toolGroupFor } from "../../shared/tools";
-import { freedomOptions, creativeFreedom } from "../../shared/creation";
-import { chapterPlan, planText } from "../../shared/planning";
-import type { TaskKind, TaskPreview, ProjectDetail } from "../../shared/types";
-import { memoryLabels } from "../../shared/types";
-import brandMark from "../assets/brand-mark.svg";
-import ConversationHistory from "./ConversationHistory.vue";
-
-const store = useWorkspace();
-const emit = defineEmits<{
-  apply: [mode: "replace" | "append" | "outline" | "selection" | "prompt"];
-}>();
-const expanded = ref(false);
-const inspecting = ref(false);
-const previewLoading = ref(false);
-const preview = ref<TaskPreview | null>(null);
-const instruction = computed({
-  get: () => store.instruction,
-  set: (value) => {
-    store.instruction = value;
-    store.scratch();
-  },
+import { toolGroups, toolNames, modeTools } from "../../shared/tools";
+import { effectiveRole } from "../../shared/roles";
+import { blueprintLabels } from "../../shared/blueprint";
+import RequestPreview from "./RequestPreview.vue";
+import TextModelSelect from "./TextModelSelect.vue";
+import type { TaskKind, TaskPreview, BlueprintLevel } from "../../shared/types";
+const emit = defineEmits<{ illustration: [text: string] }>();
+const store = useWorkspace(),
+  group = ref("brainstorm"),
+  preview = ref<TaskPreview | null>(null),
+  inspectOpen = ref(false),
+  renaming = ref(false),
+  name = ref("");
+const selectedGroup = computed(() =>
+  toolGroups.find((g) => g.kinds.includes(store.taskKind)),
+);
+const tools = computed(() => selectedGroup.value?.kinds ?? [store.taskKind]);
+const mode = computed(() => store.detail!.project.mode);
+const modeConversations = computed(() =>
+  store.conversations.filter(
+    (c) => c.mode === mode.value && c.kind !== "settings",
+  ),
+);
+const levels = computed(() =>
+  modeTools[mode.value].blueprintLevels.map((v) => ({
+    label: blueprintLabels[v as BlueprintLevel],
+    value: v,
+  })),
+);
+const targetNodes = computed(() =>
+  store
+    .detail!.project.blueprint.nodes.filter(
+      (n) => n.level === store.blueprintTarget.level,
+    )
+    .map((n) => ({ label: n.title, value: n.id })),
+);
+const parentNodes = computed(() =>
+  store
+    .detail!.project.blueprint.nodes.filter((n) =>
+      store.blueprintTarget.level === "scene"
+        ? n.level === "chapter"
+        : n.level === "volume",
+    )
+    .map((n) => ({ label: n.title, value: n.id })),
+);
+const checkCount = computed(() =>
+  store.checkScope === "book"
+    ? store.detail!.chapters.length
+    : store.checkScope === "chapters"
+      ? store.checkChapterIds.length
+      : store.chapter
+        ? 1
+        : 0,
+);
+const checkCalls = computed(() =>
+  store.checkAspect === "pacing"
+    ? checkCount.value
+    : (checkCount.value * (checkCount.value + 1)) / 2,
+);
+const model = computed(
+  () =>
+    store.taskModel ||
+    effectiveRole(store.roles, store.taskKind).model ||
+    store.settings?.text.model ||
+    "",
+);
+const activeSet = computed(() => {
+  const r = store.result;
+  return r?.type === "changes"
+    ? store.changeSets.find((s) => s.id === r.changeSetId)
+    : null;
 });
-const category = ref("正文");
-const selectedTool = computed({
-  get: () => store.taskKind,
-  set: (value) => {
-    store.taskKind = value;
-    store.scratch();
-  },
-});
-const applyingMemory = ref(false);
-
-const categories = toolGroups;
+const visibleTurns = computed(() =>
+  store.turns.filter(
+    (t) => store.taskKind === "brainstorm" || t.id === store.selectedTurnId,
+  ),
+);
 watch(
   () => [
-    store.taskKind,
-    store.chapterId,
-    JSON.stringify(store.planningTarget),
-    store.writingScope,
-    store.outputMode,
-    JSON.stringify(store.selection),
+    store.checkScope,
+    store.checkAspect,
+    store.checkCharacter,
+    JSON.stringify(store.checkChapterIds),
+    store.polishAspect,
+    store.settingCardId,
+    JSON.stringify(store.blueprintTarget),
   ],
   () => {
-    if (!store.busy && !store.conversationLoading)
-      void store.safe(store.restoreConversation);
-  },
-);
-watch(
-  selectedTool,
-  (value) => {
-    category.value = toolGroupFor(value).id;
-  },
-  { immediate: true },
-);
-watch(selectedTool, async () => {
-  if (window.innerWidth <= 1050) expanded.value = true;
-  await nextTick();
-  document
-    .querySelector(".workbench-tool-detail")
-    ?.scrollIntoView({ block: "nearest" });
-});
-watch(
-  () => store.busy,
-  async () => {
-    await nextTick();
-    document
-      .querySelector(".workbench-latest-output")
-      ?.scrollIntoView({ block: "start" });
-  },
-);
-const novelMode = computed(
-  () =>
-    store.detail?.project.mode === "novel" &&
-    store.chapter?.kind !== "fragment",
-);
-const tools = computed(() =>
-  roleDefinitions
-    .filter((role) =>
-      toolGroups
-        .find((g) => g.id === category.value)
-        ?.kinds.includes(role.id as TaskKind),
-    )
-    .map((role) =>
-      novelMode.value && role.id === "opening"
-        ? {
-            ...role,
-            name: hasChapterPlan.value ? "按章纲开篇" : "开始本章",
-            description: "依据已有设定、可用规划与前文开始写作，章纲可留空",
-          }
-        : novelMode.value && role.id === "chapter"
-          ? {
-              ...role,
-              name: hasChapterPlan.value ? "按章纲续写" : "继续本章",
-              description: "依据已有设定、可用规划、有效记忆与前文继续推进",
-            }
-          : role,
-    ),
-);
-const hasChapterPlan = computed(
-  () =>
-    !!store.chapter &&
-    !!planText(chapterPlan(store.chapter), store.usePlanDraft).trim(),
-);
-const polish = computed(() => category.value === "polish");
-const selectedInfo = computed(() => {
-  const info = toolInfo[selectedTool.value];
-  if (novelMode.value && ["opening", "chapter"].includes(selectedTool.value))
-    return {
-      ...info,
-      purpose:
-        "依据已有设定、可用规划、有效记忆与前文创作；分卷、章纲和细纲均可留空。",
-      input: "指定本章需要展开的场景、人物表现或篇幅；留空则依据当前规划创作。",
-      context: "固定设定、总纲、所属分卷、本章章纲和细纲、此前正文及有效记忆。",
-    };
-  return info;
-});
-const currentRole = computed(() =>
-  effectiveRole(store.roles, selectedTool.value),
-);
-const currentModel = computed(
-  () => currentRole.value.model || store.settings?.text.model || "",
-);
-const roleName = computed(
-  () =>
-    tools.value.find((role) => role.id === selectedTool.value)?.name ||
-    "创作任务",
-);
-const blueprintOutput = computed(
-  () =>
-    !store.planningDraft &&
-    !["planning", "analysis"].includes(store.resultType ?? "") &&
-    toolInfo[store.outputKind].output === "blueprint",
-);
-const selectedPlans = ref<string[]>([]);
-watch(
-  () => store.planningDraft,
-  (draft) => {
-    selectedPlans.value =
-      draft?.items
-        .filter((i) => !draft.appliedIds?.includes(i.id))
-        .map((i) => i.id) ?? [];
-  },
-);
-async function applyPlanning() {
-  if (!store.planningDraft) return;
-  const draft = JSON.parse(JSON.stringify(store.planningDraft));
-  const chosenIds = [...selectedPlans.value],
-    turnId = store.selectedTurnId;
-  await store.flush();
-  const result = await store.api<{ detail: ProjectDetail; base: string }>(
-    "planning:apply",
-    {
-      draft,
-      selectedIds: chosenIds,
-      turnId: turnId || undefined,
-    },
-  );
-  if (store.detail?.project.id !== draft.projectId) return;
-  store.detail = result.detail;
-  if (turnId !== store.selectedTurnId) return;
-  const remaining = store.planningDraft.items.filter(
-    (i) => !chosenIds.includes(i.id),
-  );
-  if (store.selectedTurn) {
-    store.planningDraft = {
-      ...store.planningDraft,
-      base: result.base,
-      appliedIds: [...(store.planningDraft.appliedIds ?? []), ...chosenIds],
-    };
-  } else {
-    store.planningDraft = remaining.length
-      ? { ...store.planningDraft, base: result.base, items: remaining }
-      : null;
-  }
-  if (!remaining.length && !store.selectedTurn) {
-    store.output = "";
-    store.resultType = null;
-  }
-  store.scratch();
-  if (store.selectedTurn) store.selectedTurn.applied.push("已采用所选规划");
-  store.notify("所选规划已采用，可在总纲与章节规划中继续编辑。");
-}
-
-function chooseCategory(value: string) {
-  category.value = value;
-  const group = toolGroups.find((g) => g.id === value);
-  if (group)
-    selectedTool.value =
-      value === "writing"
-        ? store.chapter?.content.trim()
-          ? "chapter"
-          : "opening"
-        : group.kinds[0];
-  store.planningTarget = undefined;
-}
-
-async function runTool() {
-  store.taskKind = selectedTool.value;
-  store.instruction = instruction.value;
-  await store.runTask(selectedTool.value, { instruction: instruction.value });
-}
-
-async function useResult(kind: "develop" | "chapter") {
-  if (store.busy || !store.output.trim()) return;
-  const context = store.output;
-  selectedTool.value = kind;
-  const nextInstruction =
-    kind === "develop"
-      ? "将上一步结果中可用的构想整理为人物、世界或蓝图的分区建议，保留与现有设定不冲突的内容。"
-      : "根据上一步构思继续当前故事，直接输出正文，按创作自由度补足必要细节。";
-  instruction.value = nextInstruction;
-  await store.runTask(kind, {
-    instruction: nextInstruction,
-    workflowContext: context,
-    newConversation: true,
-  });
-}
-
-async function applyPlan() {
-  if (!store.chapter || store.outputChapterId !== store.chapter.id) return;
-  store.editChapter({ plan: store.output });
-  await store.markResultApplied("已写入本章计划");
-  store.notify("已写入本章计划，后续写作会参考。");
-}
-
-async function inspect() {
-  if (!store.detail) return;
-  previewLoading.value = true;
-  await store.safe(async () => {
-    await store.flush();
-    preview.value = await store.api<TaskPreview>("ai:preview", {
-      ...store.currentTaskRequest(),
-      conversationId: store.conversationId || undefined,
-      parentTurnId: store.selectedTurnId || undefined,
-      requestId: crypto.randomUUID(),
-      kind: selectedTool.value,
-      projectId: store.detail!.project.id,
-      chapterId: store.chapter?.id,
-      instruction: instruction.value,
-      selection: store.currentTaskRequest().selection,
-      selectionRange: store.currentTaskRequest().selectionRange,
-      planningTarget: ["outline", "adjust"].includes(selectedTool.value)
-        ? (store.planningTarget ??
-          (store.detail!.project.mode === "novel"
-            ? store.chapter && store.chapter.kind !== "fragment"
-              ? { level: "chapter", id: store.chapter.id }
-              : { level: "synopsis" }
-            : undefined))
-        : undefined,
-      writingScope: store.currentTaskRequest().writingScope,
-      outputMode: polish.value ? store.outputMode : undefined,
-      usePlanDraft: store.usePlanDraft,
-      referenceNovelPlan: store.referenceNovelPlan,
-    });
-    inspecting.value = true;
-  });
-  previewLoading.value = false;
-}
-
-function applyLatest(mode: "append" | "replace" | "selection") {
-  store.scratch();
-  emit("apply", mode);
-}
-
-async function applyMemoryDraft() {
-  if (
-    !store.outputChapterId ||
-    !store.memoryRevisionId ||
-    !store.memoryRecords?.length
-  )
-    return;
-  applyingMemory.value = true;
-  const turnId = store.selectedTurnId,
-    chapterId = store.outputChapterId,
-    revisionId = store.memoryRevisionId;
-  const records = JSON.parse(JSON.stringify(store.memoryRecords));
-  await store.safe(async () => {
-    await store.flush();
-    await store.api("memory:apply-generated", {
-      chapterId,
-      revisionId,
-      records,
-      turnId: turnId || undefined,
-    });
-    await store.refreshProject();
-    if (turnId !== store.selectedTurnId) return;
-    if (!store.selectedTurn) store.memoryRecords = null;
-    if (store.selectedTurn) store.selectedTurn.applied.push("已写入故事记忆");
+    void store.restoreConversation();
     store.scratch();
-    await store.flush();
-    store.notify("已将审核后的记忆写入故事。");
-  });
-  applyingMemory.value = false;
+  },
+);
+async function choose(value: string) {
+  group.value = value;
+  const g = toolGroups.find((g) => g.id === value)!;
+  await store.chooseTool(
+    value === "writing"
+      ? store.chapter?.content.trim()
+        ? "continue"
+        : "opening"
+      : g.kinds[0],
+  );
+}
+async function inspect() {
+  await store.flush();
+  preview.value = await store.api<TaskPreview>(
+    "ai:preview",
+    store.currentTaskRequest(),
+  );
+  inspectOpen.value = true;
+}
+async function inspectSaved() {
+  const p = store.selectedTurn?.sourceSnapshot[0];
+  if (p) {
+    preview.value = p;
+    inspectOpen.value = true;
+  }
+}
+async function open(id: string) {
+  await store.openConversation(id);
+  store.scratch();
+}
+async function run() {
+  await store.runTask();
+  if (store.taskKind === "brainstorm" && !store.taskError) {
+    store.instruction = "";
+    store.scratch();
+  }
 }
 </script>
-
 <template>
-  <div class="workbench-dock" :class="{ expanded }">
-    <button
-      v-if="expanded"
-      class="workbench-backdrop"
-      type="button"
-      aria-label="收起 AI 工作台"
-      @click="expanded = false"
-    ></button>
-    <aside class="workbench-panel">
-      <header class="workbench-heading">
-        <div class="workbench-heading-title">
-          <img class="workbench-brand" :src="brandMark" alt="页间" />
-          <h3>AI 工作台</h3>
-          <span
-            class="online-dot"
-            :class="{ offline: !store.settings?.text.hasKey }"
-          ></span>
-        </div>
-        <NButton
-          quaternary
-          circle
-          size="small"
-          :title="expanded ? '收起工作台' : '展开工作台'"
-          :aria-label="expanded ? '收起工作台' : '展开工作台'"
-          @click="expanded = !expanded"
-        >
-          <template #icon
-            ><Minimize2 v-if="expanded" :size="15" /><Maximize2
-              v-else
-              :size="15"
-          /></template>
-        </NButton>
-      </header>
-
-      <div class="workbench-scroll">
-        <ConversationHistory />
-        <div class="workbench-role-row">
-          <strong>{{ roleName }}</strong>
-          <RouterLink :to="{ path: '/roles', query: { role: selectedTool } }"
-            >编辑职责</RouterLink
-          >
-        </div>
-        <label class="field-label first">{{
-          currentRole.model ? "文字模型（职责指定）" : "文字模型"
-        }}</label>
-        <NSelect
-          :value="currentModel || null"
-          :options="
-            store.settings?.text.selectedModels.map((id) => ({
-              label: id,
-              value: id,
-            })) || []
-          "
-          placeholder="在设置中勾选模型"
-          :disabled="store.busy || !!currentRole.model"
-          filterable
+  <aside class="studio-workbench">
+    <header>
+      <h2>创作工具</h2>
+      <span
+        >{{ mode === "novel" ? "长篇创作" : "自由探索" }} ·
+        {{ model || "未配置模型" }}</span
+      >
+    </header>
+    <label class="field-label">创作模型</label>
+    <TextModelSelect
+      v-model="store.taskModel"
+      :role="store.taskKind"
+      :disabled="store.busy"
+      @update:model-value="store.scratch"
+    />
+    <div class="tool-grid">
+      <button
+        v-for="g in toolGroups"
+        :key="g.id"
+        :class="{ active: selectedGroup?.id === g.id }"
+        :disabled="store.busy"
+        @click="store.safe(() => choose(g.id))"
+      >
+        {{ g.name }}
+      </button>
+    </div>
+    <div class="tool-form">
+      <h3>{{ toolNames[store.taskKind] }}</h3>
+      <p class="field-help" v-if="store.taskKind === 'brainstorm'">
+        基于本书全部非正文资料聊一聊。仅保存聊天记录，想法采用前不会变成设定。
+      </p>
+      <p
+        class="field-help"
+        v-else-if="['opening', 'continue'].includes(store.taskKind)"
+      >
+        {{ modeTools[mode].writing }}
+        {{
+          store.taskKind === "opening"
+            ? "只向空章写入开篇。"
+            : "只在当前正文结尾追加。"
+        }}
+      </p>
+      <NSelect
+        v-if="tools.length > 1"
+        :value="store.taskKind"
+        :options="tools.map((k) => ({ label: toolNames[k], value: k }))"
+        :disabled="store.busy"
+        @update:value="(k) => store.safe(() => store.chooseTool(k as TaskKind))"
+      />
+      <template v-if="store.taskKind === 'blueprint'"
+        ><label class="field-label">规划层级</label
+        ><NSelect
+          v-model:value="store.blueprintTarget.level"
+          :disabled="store.busy"
+          :options="levels"
           @update:value="
-            (value) => store.safe(() => store.setModel('text', value))
+            () =>
+              (store.blueprintTarget = {
+                level: store.blueprintTarget.level,
+                count: 1,
+              })
+          " /><label class="field-label">修改目标</label
+        ><NSelect
+          v-model:value="store.blueprintTarget.id"
+          :disabled="store.busy"
+          clearable
+          :options="targetNodes"
+          placeholder="新建规划节点"
+          @update:value="() => (store.blueprintTarget.count = 1)" /><template
+          v-if="!store.blueprintTarget.id"
+          ><template
+            v-if="['chapter', 'scene'].includes(store.blueprintTarget.level)"
+            ><label class="field-label">上级规划</label
+            ><NSelect
+              v-model:value="store.blueprintTarget.parentId"
+              :disabled="store.busy"
+              clearable
+              :options="parentNodes" /></template
+          ><template v-if="store.blueprintTarget.level === 'chapter'"
+            ><label class="field-label">关联章节（可选）</label
+            ><NSelect
+              v-model:value="store.blueprintTarget.chapterId"
+              :disabled="store.busy"
+              clearable
+              :options="
+                store.detail!.chapters.map((c) => ({
+                  label: c.title,
+                  value: c.id,
+                }))
+              " /></template
+          ><label class="field-label">生成数量</label
+          ><NInputNumber
+            v-model:value="store.blueprintTarget.count"
+            :disabled="store.busy"
+            :min="1"
+            :max="
+              store.blueprintTarget.chapterId ||
+              store.blueprintTarget.level === 'synopsis'
+                ? 1
+                : 30
+            " /></template
+      ></template>
+      <template v-if="store.taskKind === 'polish'"
+        ><label class="field-label">打磨方向</label
+        ><NSelect
+          v-model:value="store.polishAspect"
+          :disabled="store.busy"
+          :options="[
+            { label: '表达', value: 'expression' },
+            { label: '场景', value: 'scene' },
+            { label: '对白', value: 'dialogue' },
+          ]"
+        />
+        <p class="field-help">
+          完整参考当前章，仅替换原选区。{{
+            store.selection
+              ? "已选择 " + store.selection.text.length + " 字"
+              : "请先在正文中选择文段。"
+          }}
+        </p>
+        <blockquote v-if="store.selection" class="selection-preview">
+          {{ store.selection.text }}
+        </blockquote></template
+      >
+      <template v-if="store.taskKind === 'check'"
+        ><label class="field-label">检查方向</label
+        ><NSelect
+          v-model:value="store.checkAspect"
+          :disabled="store.busy"
+          :options="[
+            { label: '连续性与设定', value: 'continuity' },
+            { label: '节奏', value: 'pacing' },
+            { label: '人物弧线', value: 'arc' },
+          ]"
+        /><NInput
+          v-if="store.checkAspect === 'arc'"
+          v-model:value="store.checkCharacter"
+          :disabled="store.busy"
+          placeholder="关注的人物（可选）"
+        /><label class="field-label">检查范围</label
+        ><NSelect
+          v-model:value="store.checkScope"
+          :disabled="store.busy"
+          :options="[
+            { label: '当前章', value: 'current' },
+            { label: '选定章节', value: 'chapters' },
+            { label: '全书', value: 'book' },
+          ]"
+        /><NSelect
+          v-if="store.checkScope === 'chapters'"
+          v-model:value="store.checkChapterIds"
+          :disabled="store.busy"
+          multiple
+          :options="
+            store.detail!.chapters.map((c) => ({ label: c.title, value: c.id }))
           "
         />
-
-        <div class="workbench-tools">
-          <label class="field-label">创作自由度</label>
-          <NSelect
-            :value="
-              store.detail ? creativeFreedom(store.detail.project) : 'balanced'
-            "
-            :options="freedomOptions"
+        <p class="field-help">
+          报告只供参考。本次 {{ checkCount }} 章，预计
+          {{ checkCalls }}
+          次模型调用。连续性和人物弧线含两两跨章对照，可缩小章节范围。
+        </p></template
+      >
+      <div class="conversation-controls">
+        <NSelect
+          :value="store.conversationId || null"
+          :options="
+            modeConversations.map((c) => ({ label: c.title, value: c.id }))
+          "
+          filterable
+          placeholder="当前模式的历史对话"
+          :disabled="store.busy"
+          @update:value="(id) => store.safe(() => open(id))"
+        />
+        <div class="workbench-actions">
+          <NButton
+            size="tiny"
             :disabled="store.busy"
-            @update:value="
-              (value) => store.editProject({ creativeFreedom: value })
-            "
-          />
-          <p class="field-help">
-            {{
-              freedomOptions.find(
-                (item) =>
-                  item.value ===
-                  (store.detail
-                    ? creativeFreedom(store.detail.project)
-                    : "balanced"),
-              )?.description
-            }}
-            已明确的设定始终优先，可随时切换。
-          </p>
-          <div class="workbench-section-heading"><h3>创作工具</h3></div>
-          <div class="filter-tabs workbench-categories">
-            <button
-              v-for="item in categories"
-              :key="item.id"
-              :class="{ active: category === item.id }"
-              :disabled="
-                store.busy ||
-                (item.id === 'notes' && store.chapter?.kind === 'fragment')
-              "
-              @click="chooseCategory(item.id)"
-            >
-              {{ item.name }}
-            </button>
-          </div>
-          <div class="workbench-tool-grid">
-            <button
-              v-for="tool in tools"
-              :key="tool.id"
-              :class="['workbench-tool', { active: selectedTool === tool.id }]"
-              :disabled="store.busy"
-              @click="selectedTool = tool.id as TaskKind"
-            >
-              <strong>{{ tool.name }}</strong
-              ><span>{{ tool.description }}</span>
-            </button>
-          </div>
-          <div class="workbench-tool-detail">
-            <template v-if="polish">
-              <label class="field-label">结果类型</label
-              ><NSelect
-                v-model:value="store.outputMode"
-                :options="[
-                  { label: '生成改写稿', value: 'rewrite' },
-                  { label: '只给修改建议', value: 'analysis' },
-                ]"
-              />
-              <label class="field-label">修改范围</label
-              ><NSelect
-                :value="
-                  store.selection?.text.trim()
-                    ? 'selection'
-                    : store.writingScope
-                "
-                :disabled="!!store.selection?.text.trim()"
-                @update:value="(value) => (store.writingScope = value)"
-                :options="[
-                  { label: '选中文段', value: 'selection' },
-                  {
-                    label:
-                      store.chapter?.kind === 'fragment'
-                        ? '当前片段全文'
-                        : '当前章节全文',
-                    value: 'document',
-                  },
-                ]"
-              />
-            </template>
-            <NCheckbox
-              v-if="store.detail?.project.mode === 'novel'"
-              v-model:checked="store.usePlanDraft"
-              >本次参考未确认的规划草稿试写</NCheckbox
-            >
-            <NCheckbox v-else v-model:checked="store.referenceNovelPlan"
-              >本次参考保留的长篇规划</NCheckbox
-            >
-            <p
-              v-if="
-                store.planningTarget &&
-                ['outline', 'adjust'].includes(selectedTool)
-              "
-              class="field-help"
-            >
-              本次按已选层级生成规划。可在“总纲与章节规划”切换目标。
-            </p>
-            <p>{{ selectedInfo.purpose }}</p>
-            <details class="workbench-tool-reference">
-              <summary>查看输入、参考与写入位置</summary>
-              <dl>
-                <div>
-                  <dt>所需输入</dt>
-                  <dd>{{ selectedInfo.input }}</dd>
-                </div>
-                <div>
-                  <dt>参考上下文</dt>
-                  <dd>{{ selectedInfo.context }}</dd>
-                </div>
-                <div>
-                  <dt>结果形式</dt>
-                  <dd>{{ selectedInfo.result }}</dd>
-                </div>
-                <div>
-                  <dt>写入目标</dt>
-                  <dd>{{ selectedInfo.target }}</dd>
-                </div>
-              </dl>
-            </details>
-            <label class="field-label">{{
-              store.selectedTurn
-                ? `继续修改版本 ${store.selectedTurn.number}`
-                : "本次要求"
-            }}</label>
-            <NInput
-              v-model:value="instruction"
-              type="textarea"
-              :autosize="{ minRows: 3, maxRows: 7 }"
-              :placeholder="selectedInfo.input"
-              :disabled="store.busy"
-            />
-            <div v-if="store.selection?.text" class="selection-note">
-              <FileText :size="13" />已选正文
-              {{ store.selection.text.length }} 字，将作为本次参考
-            </div>
-            <div class="context-note">
-              <BookOpen :size="13" /><span
-                >将参考本故事的蓝图、设定与有效记忆</span
-              >
-            </div>
-            <NButton
-              text
-              class="context-inspect"
-              :loading="previewLoading"
-              :disabled="store.busy"
-              @click="inspect"
-              >查看本次参考内容</NButton
-            >
-            <div class="workbench-run-actions">
-              <NButton
-                v-if="!store.busy"
-                type="primary"
-                block
-                :disabled="
-                  store.conversationLoading || !!store.conversationInvalidReason
-                "
-                @click="store.safe(runTool)"
-              >
-                <template #icon><Play :size="15" /></template
-                >{{
-                  store.selectedTurn
-                    ? `基于版本 ${store.selectedTurn.number} 生成新版`
-                    : selectedTool === "opening"
-                      ? novelMode
-                        ? hasChapterPlan
-                          ? "按章纲开篇"
-                          : "开始本章"
-                        : "直接开始故事"
-                      : selectedTool === "chapter"
-                        ? novelMode
-                          ? hasChapterPlan
-                            ? "按章纲续写"
-                            : "继续本章"
-                          : "接着写"
-                        : selectedTool === "develop"
-                          ? "生成分区建议"
-                          : "生成草稿"
-                }}
-              </NButton>
-              <NButton v-else block @click="store.safe(store.stopTask)">
-                <template #icon><Square :size="13" /></template
-                >停止生成，保留内容
-              </NButton>
-              <RouterLink
-                v-if="!store.settings?.text.hasKey"
-                to="/settings"
-                class="setup-link"
-                >先配置文字模型 <ArrowUpRight :size="13"
-              /></RouterLink>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="store.taskError" class="task-error">
-          <AlertCircle :size="15" />
-          <p>{{ store.taskError }}</p>
-        </div>
-        <section
-          v-if="store.output || store.busy || store.selectedTurn"
-          class="workbench-latest-output"
-        >
-          <div class="workbench-section-heading">
-            <h3>
-              <LoaderCircle
-                v-if="store.busy"
-                class="spin"
-                :size="14"
-              /><CheckCircle2 v-else :size="14" />{{
-                store.busy
-                  ? "正在生成"
-                  : store.selectedTurn
-                    ? `版本 ${store.selectedTurn.number} · 审核稿`
-                    : "生成结果"
-              }}
-            </h3>
-          </div>
-          <NInput
-            v-if="
-              (store.outputKind !== 'develop' && !store.planningDraft) ||
-              (store.selectedTurn && store.selectedTurn.status !== 'complete')
-            "
-            :value="store.output"
-            type="textarea"
-            :autosize="{ minRows: 8, maxRows: 24 }"
+            @click="store.newConversation"
+            >新对话</NButton
+          ><NButton
+            v-if="store.activeConversation"
+            size="tiny"
             :disabled="store.busy"
-            @update:value="
-              store.output = $event;
-              store.scratch();
+            @click="
+              name = store.activeConversation.title;
+              renaming = true;
             "
-          />
-          <div v-else-if="store.planningDraft" class="planning-draft-review">
-            <article v-for="item in store.planningDraft.items" :key="item.id">
-              <NPopconfirm
-                positive-text="移除此项"
-                negative-text="取消"
-                @positive-click="
-                  () => {
-                    if (!store.planningDraft) return;
-                    store.planningDraft.items =
-                      store.planningDraft.items.filter((i) => i.id !== item.id);
-                    selectedPlans = selectedPlans.filter(
-                      (id) => id !== item.id,
-                    );
-                    if (!store.planningDraft.items.length) {
-                      store.planningDraft = null;
-                      store.output = '';
-                    }
-                    store.scratch();
-                  }
-                "
-                ><template #trigger
-                  ><NButton
-                    size="small"
-                    :disabled="
-                      store.busy ||
-                      store.planningDraft?.appliedIds?.includes(item.id)
-                    "
-                    >移除此项候选</NButton
-                  ></template
-                >移除未采用的「{{ item.title }}」？已确认规划保留。</NPopconfirm
-              >
-              <NCheckbox
-                :checked="
-                  selectedPlans.includes(item.id) ||
-                  store.planningDraft.appliedIds?.includes(item.id)
-                "
-                :disabled="
-                  store.busy ||
-                  store.planningDraft.appliedIds?.includes(item.id)
-                "
-                @update:checked="
-                  (checked) =>
-                    (selectedPlans = checked
-                      ? [...selectedPlans, item.id]
-                      : selectedPlans.filter((id) => id !== item.id))
-                "
-                >{{
-                  store.planningDraft.appliedIds?.includes(item.id)
-                    ? "已采用"
-                    : "采用此项"
-                }}</NCheckbox
-              ><NInput
-                v-model:value="item.title"
-                :disabled="
-                  store.busy ||
-                  store.planningDraft.appliedIds?.includes(item.id)
-                "
-                @update:value="store.scratch"
-              /><NInput
-                v-model:value="item.content"
-                :disabled="
-                  store.busy ||
-                  store.planningDraft.appliedIds?.includes(item.id)
-                "
-                type="textarea"
-                :autosize="{ minRows: 4, maxRows: 14 }"
-                @update:value="store.scratch"
-              />
-            </article>
-            <NButton
-              :disabled="
-                !selectedPlans.length ||
-                store.busy ||
-                !!store.conversationInvalidReason ||
-                !!store.selectedTurn?.invalidReason
-              "
-              type="primary"
-              @click="store.safe(applyPlanning)"
-              >采用所选规划</NButton
-            >
-          </div>
-          <div
-            v-else-if="store.developmentDraft"
-            class="development-output-summary"
+            >重命名</NButton
+          ><NPopconfirm
+            v-if="store.activeConversation"
+            @positive-click="store.safe(store.deleteConversation)"
+            ><template #trigger
+              ><NButton size="tiny" :disabled="store.busy"
+                >删除对话</NButton
+              ></template
+            >删除对话记录？已生成的候选和已采用内容保留。</NPopconfirm
           >
-            <p>{{ store.developmentDraft.summary }}</p>
-            <p class="field-help">
-              {{ store.developmentDraft.changes.length }}
-              个分区建议，可分别编辑、采用。
-            </p>
-          </div>
-          <div v-else class="development-output-summary">
-            <p>
-              {{
-                store.busy
-                  ? "正在整理人物、世界与剧情分区…"
-                  : "本次未形成可采用的分区建议，可以调整要求后重新生成。"
-              }}
-            </p>
-          </div>
-          <div
-            v-if="
-              !store.busy &&
-              store.output &&
-              !store.taskError &&
-              !store.conversationInvalidReason &&
-              !store.selectedTurn?.invalidReason &&
-              (!store.selectedTurn || store.selectedTurn.status === 'complete')
-            "
-            class="workbench-actions"
-          >
-            <template
-              v-if="
-                (!store.resultType &&
-                  toolInfo[store.outputKind].output === 'prose') ||
-                store.resultType === 'prose'
-              "
-            >
-              <NButton
-                size="small"
-                type="primary"
-                @click="applyLatest('append')"
-                >追加到本章</NButton
-              >
-              <NButton size="small" @click="applyLatest('replace')"
-                >替换正文</NButton
-              >
-            </template>
-            <NButton
-              v-else-if="
-                store.resultType === 'rewrite' ||
-                (!store.resultType &&
-                  store.outputKind === 'revise' &&
-                  store.outputSelection)
-              "
-              size="small"
-              type="primary"
-              @click="
-                applyLatest(
-                  store.outputScope === 'document' ? 'replace' : 'selection',
-                )
-              "
-              >{{
-                store.outputScope === "document"
-                  ? "替换当前全文"
-                  : "替换选中文段"
-              }}</NButton
-            >
-            <NButton
-              v-else-if="blueprintOutput"
-              size="small"
-              type="primary"
-              @click="emit('apply', 'outline')"
-              >写入故事蓝图</NButton
-            >
-            <NButton
-              v-else-if="
-                store.outputKind === 'develop' && store.developmentDraft
-              "
-              size="small"
-              type="primary"
-              @click="store.reviewDevelopment(store.developmentDraft)"
-              >查看并采用分区建议</NButton
-            >
-            <NButton
-              v-else-if="store.outputKind === 'prompt'"
-              size="small"
-              type="primary"
-              @click="emit('apply', 'prompt')"
-              ><template #icon><ImageIcon :size="14" /></template
-              >去生成插画</NButton
-            >
-          </div>
-          <div
-            v-if="
-              !store.busy &&
-              store.output &&
-              !store.taskError &&
-              !store.conversationInvalidReason &&
-              !store.selectedTurn?.invalidReason &&
-              (!store.selectedTurn || store.selectedTurn.status === 'complete')
-            "
-            class="workbench-actions"
-          >
-            <NButton
-              v-if="
-                store.outputKind !== 'develop' &&
-                store.outputKind !== 'notes' &&
-                store.resultType !== 'planning'
-              "
-              size="small"
-              @click="store.safe(() => useResult('develop'))"
-              >据此完善设定与蓝图</NButton
-            >
-            <NButton
-              v-if="
-                store.resultType !== 'planning' &&
-                ['blueprint', 'development'].includes(
-                  toolInfo[store.outputKind].output,
-                ) &&
-                store.chapter
-              "
-              size="small"
-              @click="store.safe(() => useResult('chapter'))"
-              >根据结果写正文</NButton
-            >
-            <NButton
-              v-if="
-                store.resultType !== 'planning' &&
-                store.outputKind === 'outline' &&
-                store.outputChapterId === store.chapter?.id
-              "
-              size="small"
-              @click="applyPlan"
-              >写入本章计划</NButton
-            >
-          </div>
-          <p v-if="blueprintOutput" class="workbench-output-note">
-            这份结果也已保存到故事蓝图的「创作候选」，可以先在蓝图页审核。
-          </p>
-          <div
-            v-if="
-              store.outputKind === 'notes' &&
-              store.memoryRecords?.length &&
-              !store.conversationInvalidReason &&
-              !store.selectedTurn?.invalidReason &&
-              (!store.selectedTurn || store.selectedTurn.status === 'complete')
-            "
-            class="memory-draft"
-          >
-            <div class="memory-meta">
-              <strong>待审核记忆条目</strong
-              ><span
-                >{{ store.memoryRecords.length }} 条 · 来源版本
-                {{ store.memoryRevisionId.slice(0, 8) }}</span
-              >
-            </div>
-            <article
-              v-for="(record, index) in store.memoryRecords"
-              :key="index"
-              class="memory-draft-row"
-            >
-              <NSelect
-                v-model:value="record.kind"
-                :disabled="
-                  store.busy ||
-                  store.selectedTurn?.applied.includes('已写入故事记忆')
-                "
-                :options="
-                  Object.entries(memoryLabels).map(([value, label]) => ({
-                    value,
-                    label,
-                  }))
-                "
-                @update:value="store.scratch"
-              />
-              <NInput
-                v-model:value="record.content"
-                :disabled="
-                  store.busy ||
-                  store.selectedTurn?.applied.includes('已写入故事记忆')
-                "
-                type="textarea"
-                :autosize="{ minRows: 1, maxRows: 5 }"
-                @update:value="store.scratch"
-              />
-              <NPopconfirm
-                positive-text="移除候选"
-                negative-text="取消"
-                @positive-click="
-                  () => {
-                    store.memoryRecords?.splice(index, 1);
-                    if (!store.memoryRecords?.length)
-                      store.memoryRecords = null;
-                    store.scratch();
-                  }
-                "
-                ><template #trigger
-                  ><NButton
-                    size="small"
-                    :disabled="
-                      store.busy ||
-                      store.selectedTurn?.applied.includes('已写入故事记忆')
-                    "
-                    >移除</NButton
-                  ></template
-                >移除此条待审核记忆？正式记忆保留。</NPopconfirm
-              >
-            </article>
-            <NButton
-              size="small"
-              type="primary"
-              :loading="applyingMemory"
-              :disabled="store.selectedTurn?.applied.includes('已写入故事记忆')"
-              @click="applyMemoryDraft"
-              >{{
-                store.selectedTurn?.applied.includes("已写入故事记忆")
-                  ? "此版本记忆已写入"
-                  : "确认写入故事记忆"
-              }}</NButton
-            >
-          </div>
-        </section>
-        <div class="assistant-footnote">
-          <CornerDownLeft :size="12" />生成内容先留在草稿区，由你决定采用。
         </div>
       </div>
-    </aside>
-
-    <NDrawer
-      v-model:show="inspecting"
-      placement="right"
-      width="min(820px, 92vw)"
-    >
-      <NDrawerContent title="本次职责与参考内容" closable>
-        <template v-if="preview">
-          <p class="material-help">
-            模型：{{
-              preview.model || "尚未设置"
-            }}。以下为当前编辑状态下构建的请求预览。
-          </p>
-          <h3>完整系统提示词</h3>
-          <pre class="effective-prompt">{{ preview.systemPrompt }}</pre>
-          <h3>创作资料覆盖情况</h3>
-          <p class="field-help">
-            固定设定与“始终参考”分区完整保留；原文按段选取。{{
-              preview.omitted
-                ? `本次有 ${preview.omitted} 个片段未装入，可调整本章计划、整理资料或标记关键分区。`
-                : "本次已装入全部启用的创作资料。"
-            }}
-          </p>
-          <div class="coverage-list">
-            <div v-for="(item, index) in preview.coverage" :key="index">
-              <strong>{{ item.card }} · {{ item.source }}</strong
-              ><span>{{ item.included }} / {{ item.total }} 段</span>
-            </div>
-          </div>
-          <h3>完整参考上下文</h3>
-          <pre class="effective-prompt">{{ preview.context }}</pre>
-          <template v-if="preview.messages && preview.messages.length > 2">
-            <h3>本次实际对话消息</h3>
-            <p v-if="preview.omittedTurns" class="field-help">
-              较早的
-              {{ preview.omittedTurns }}
-              轮问答未装入；首轮要求与所选完整稿已保留。
-            </p>
-            <article
-              v-for="(message, index) in preview.messages.slice(2)"
-              :key="index"
+      <div v-if="store.taskKind === 'brainstorm'" class="chat-messages">
+        <article v-for="t in visibleTurns" :key="t.id">
+          <div class="chat-user">{{ t.instruction }}</div>
+          <pre class="chat-assistant">{{
+            t.result?.text || t.rawResponse
+          }}</pre>
+          <p v-if="t.error" class="review-error">{{ t.error }}</p>
+          <NButton
+            size="tiny"
+            :disabled="store.busy"
+            @click="store.safe(() => store.selectVersion(t.id))"
+            >{{
+              t.id === store.selectedTurnId ? "当前分支" : "从此处继续"
+            }}</NButton
+          >
+        </article>
+      </div>
+      <pre
+        v-if="store.taskKind === 'brainstorm' && store.busy"
+        class="chat-assistant"
+        aria-live="polite"
+        >{{ store.output || "正在回复……" }}</pre>
+      <label class="field-label">{{
+        store.taskKind === "brainstorm" ? "聊点什么？" : "本次要求"
+      }}</label
+      ><NInput
+        v-model:value="store.instruction"
+        type="textarea"
+        :autosize="{ minRows: 3, maxRows: 10 }"
+        :disabled="store.busy"
+        :placeholder="
+          store.taskKind === 'brainstorm'
+            ? '聊聊人物、冲突、世界或故事可能性……'
+            : '描述本次希望完成的内容……'
+        "
+        @update:value="store.scratch"
+        @keydown.ctrl.enter="store.safe(run)"
+      />
+      <div class="workbench-actions">
+        <NButton
+          type="primary"
+          :loading="store.busy"
+          :disabled="store.imageBusy"
+          @click="store.safe(run)"
+          >{{ store.taskKind === "brainstorm" ? "发送" : "生成结果" }}</NButton
+        ><NButton v-if="store.busy" @click="store.stopTask">停止</NButton
+        ><NButton :disabled="store.busy" @click="store.safe(inspect)"
+          >查看实际参考</NButton
+        >
+      </div>
+      <NButton
+        v-if="store.selectedTurn?.sourceSnapshot.length"
+        text
+        size="tiny"
+        @click="inspectSaved"
+        >查看此结果生成时的来源快照</NButton
+      >
+      <p v-if="store.taskError" role="alert" class="review-error">
+        {{ store.taskError }}
+      </p>
+      <template v-if="store.taskKind !== 'brainstorm'"
+        ><div v-if="store.turns.length" class="result-versions">
+          <NSelect
+            :value="store.selectedTurnId"
+            :options="
+              store.turns.map((t) => ({
+                label: '版本 ' + t.number + ' · ' + t.status,
+                value: t.id,
+              }))
+            "
+            :disabled="store.busy"
+            @update:value="(id) => store.safe(() => store.selectVersion(id))"
+          />
+        </div>
+        <pre v-if="store.output" class="tool-result">{{
+          store.result?.type === "changes"
+            ? "已生成 " + (activeSet?.changes.length ?? 0) + " 项待审核修改。"
+            : store.output
+        }}</pre>
+        <NButton
+          v-if="
+            store.result?.type === 'changes' &&
+            store.selectedTurn?.status === 'complete'
+          "
+          type="primary"
+          :disabled="store.busy"
+          @click="store.reviewingChangeId = store.result.changeSetId"
+          >查看差异与审核</NButton
+        >
+        <NButton
+          v-if="
+            store.result?.type === 'illustration' &&
+            store.selectedTurn?.status === 'complete'
+          "
+          :disabled="store.busy"
+          @click="emit('illustration', store.result.text)"
+          >送入插画提示词</NButton
+        >
+        <div v-if="store.result?.type === 'report'" class="report-findings">
+          <article v-for="b in store.result.report.batches" :key="b.chapterId">
+            <strong
+              >{{ b.title }} ·
+              {{ b.status === "complete" ? "完成" : "失败" }}</strong
+            ><NButton
+              text
+              size="small"
+              @click="store.safe(() => store.switchChapter(b.chapterId))"
+              >定位章节</NButton
             >
-              <strong>{{
-                message.role === "assistant" ? "AI 候选" : "作者要求"
-              }}</strong>
-              <pre class="effective-prompt">{{ message.content }}</pre>
-            </article>
-          </template>
-        </template>
-      </NDrawerContent>
-    </NDrawer>
-  </div>
+          </article>
+        </div>
+      </template>
+    </div>
+    <NModal v-model:show="renaming" preset="dialog" title="重命名对话"
+      ><NInput v-model:value="name" /><template #action
+        ><NButton
+          @click="
+            store.safe(async () => {
+              await store.renameConversation(name);
+              renaming = false;
+            })
+          "
+          >保存</NButton
+        ></template
+      ></NModal
+    >
+    <NModal
+      v-model:show="inspectOpen"
+      preset="card"
+      title="实际请求与参考资料"
+      :style="{ width: '980px', maxWidth: '94vw' }"
+      ><RequestPreview v-if="preview" :preview="preview"
+    /></NModal>
+  </aside>
 </template>
+<style scoped>
+.studio-workbench {
+  width: 390px;
+  flex-shrink: 0;
+  border-left: 1px solid #dce2e9;
+  background: var(--surface, #fff);
+  overflow-y: auto;
+  padding: 22px;
+  height: 100%;
+  box-sizing: border-box;
+}
+.studio-workbench header h2 {
+  font-size: 19px;
+  margin: 0;
+}
+.studio-workbench header span {
+  display: block;
+  color: #77818d;
+  font-size: 12px;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 7px;
+  margin: 20px 0;
+}
+.tool-grid button {
+  border: 1px solid #dce2e9;
+  background: transparent;
+  border-radius: 7px;
+  padding: 10px;
+  cursor: pointer;
+  color: inherit;
+}
+.tool-grid button.active {
+  border-color: #526f5c;
+  background: #e6eee9;
+  color: #294c36;
+}
+.tool-form h3 {
+  margin: 10px 0;
+}
+.tool-form .n-select,
+.tool-form .n-input-number {
+  margin-bottom: 7px;
+}
+.conversation-controls {
+  border-top: 1px solid #e1e5eb;
+  padding-top: 15px;
+  margin-top: 18px;
+}
+.tool-result,
+.chat-assistant,
+.preview-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.8;
+}
+.tool-result {
+  max-height: 540px;
+  overflow: auto;
+}
+.chat-messages {
+  max-height: 450px;
+  overflow: auto;
+  margin-top: 15px;
+}
+.chat-messages article {
+  border-bottom: 1px solid #e2e7ec;
+  padding-bottom: 15px;
+  margin-bottom: 15px;
+}
+.chat-user {
+  background: #e9eff5;
+  padding: 12px;
+  border-radius: 8px;
+}
+.chat-assistant {
+  margin: 13px 0;
+}
+.selection-preview {
+  max-height: 100px;
+  overflow: auto;
+  margin: 10px 0;
+  padding: 10px;
+  background: #f0f4f7;
+}
+.review-error {
+  color: #b42318;
+  white-space: pre-wrap;
+}
+.result-versions {
+  margin-top: 20px;
+}
+.reference-preview {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.reference-preview img {
+  width: 150px;
+  height: 150px;
+  object-fit: contain;
+}
+.reference-preview figure {
+  margin: 10px 0;
+}
+.report-findings article {
+  display: flex;
+  gap: 12px;
+  padding: 8px;
+}
+</style>
+
+<style scoped>
+.studio-workbench {
+  border-color: var(--border);
+  background: var(--surface);
+}
+.tool-grid button,
+.conversation-controls {
+  border-color: var(--border);
+}
+.tool-grid button.active {
+  background: var(--accent-soft);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.chat-user,
+.selection-preview {
+  background: var(--surface-muted);
+}
+.studio-workbench header span {
+  color: var(--muted);
+}
+.tool-form > .field-help {
+  line-height: 1.8;
+}
+.workbench-actions {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+</style>

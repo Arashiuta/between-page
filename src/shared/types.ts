@@ -1,155 +1,41 @@
 export type Mode = "explore" | "novel";
 export type CardKind = "character" | "world" | "inspiration";
-export type MemoryKind =
-  "fact" | "state" | "relationship" | "knowledge" | "foreshadow" | "summary";
+export const memoryKinds = [
+  "fact",
+  "state",
+  "relationship",
+  "knowledge",
+  "foreshadow",
+  "summary",
+] as const;
+export type MemoryKind = (typeof memoryKinds)[number];
 export const taskKinds = [
+  "brainstorm",
+  "settings",
+  "blueprint",
   "opening",
-  "chapter",
-  "develop",
-  "outline",
-  "adjust",
+  "continue",
+  "polish",
   "check",
   "notes",
   "prompt",
-  "revise",
-  "organize",
-  "brainstorm",
-  "scene",
-  "dialogue",
-  "pacing",
-  "arc",
+  "title",
 ] as const;
 export type TaskKind = (typeof taskKinds)[number];
+export type RoleId = TaskKind;
 export type CreativeFreedom = "guided" | "balanced" | "free";
-export interface PlanBlock {
-  content: string;
-  confirmed?: string;
-  reviewReason?: string;
-}
-export interface NovelPlan {
-  synopsis: PlanBlock;
-  volumes: { id: string; title: string; plan: PlanBlock }[];
-}
-export interface SceneOutline {
+export type BlueprintLevel =
+  "section" | "synopsis" | "volume" | "chapter" | "scene";
+export interface BlueprintNode {
   id: string;
-  title: string;
-  plan: PlanBlock;
-}
-export interface PlanningTarget {
-  level: "synopsis" | "volume" | "chapter" | "scene";
-  id?: string;
-  parentId?: string;
-  count?: number;
-}
-export interface PlanningDraft {
-  projectId: string;
-  target: PlanningTarget;
-  base: string;
-  items: { id: string; title: string; content: string }[];
-  appliedIds?: string[];
-}
-export interface PlanningVersion {
-  id: string;
-  createdAt: string;
-  label: string;
-  novelPlan: NovelPlan;
-  chapterOrder?: string[];
-  chapters: {
-    id: string;
-    title?: string;
-    plan: string;
-    planMeta?: Omit<PlanBlock, "content">;
-    volumeId?: string | null;
-    scenes?: SceneOutline[];
-  }[];
-}
-export interface PlanningTreeRef {
-  level: "synopsis" | "unassigned" | "volume" | "chapter" | "scene";
-  id?: string;
-  parentId?: string;
-}
-export interface PlanningMove {
-  source: PlanningTreeRef;
-  target: PlanningTreeRef;
-  placement: "before" | "inside" | "after";
-}
-export interface PlanningMovePreview {
-  base: string;
-  changed: boolean;
-  requiresNormalization: boolean;
-  beforeOrder: string[];
-  afterOrder: string[];
-}
-export interface BlueprintSection {
-  id: string;
+  level: BlueprintLevel;
+  parentId: string | null;
+  chapterId: string | null;
   title: string;
   content: string;
 }
-export interface BlueprintCandidate {
-  id: string;
-  title: string;
-  content: string;
-  source: TaskKind;
-  createdAt: string;
-  development?: StoryDevelopmentDraft;
-  conversationId?: string;
-  turnId?: string;
-}
-export interface DevelopmentChange {
-  id: string;
-  target: "blueprint" | "character" | "world";
-  targetId: string;
-  sectionId: string;
-  name: string;
-  title: string;
-  content: string;
-  mode: "append" | "replace";
-  basis: "established" | "proposal";
-  sources: { revisionId: string; quote: string }[];
-  base: string | null;
-}
-export interface StoryDevelopmentDraft {
-  id: string;
-  projectId: string;
-  summary: string;
-  changes: DevelopmentChange[];
-  warnings: string[];
-  appliedIds: string[];
-}
-export interface WorkflowStep {
-  id: string;
-  kind: TaskKind;
-  title: string;
-  instruction: string;
-}
-export interface WorkflowTemplate {
-  id: string;
-  name: string;
-  description: string;
-  steps: WorkflowStep[];
-  builtin?: boolean;
-}
-export interface WorkflowStepResult {
-  stepId: string;
-  status: "pending" | "approved" | "skipped";
-  output: string;
-  updatedAt: string;
-  memoryRecords?: { kind: MemoryKind; content: string }[];
-  memoryRevisionId?: string;
-  applied?: boolean;
-  outputSelection?: { text: string; from: number; to: number } | null;
-}
-export interface WorkflowRun {
-  id: string;
-  projectId: string;
-  templateId: string;
-  templateName: string;
-  chapterId: string;
-  steps: WorkflowStep[];
-  results: WorkflowStepResult[];
-  currentStep: number;
-  createdAt: string;
-  updatedAt: string;
+export interface Blueprint {
+  nodes: BlueprintNode[];
 }
 export interface DocumentNode {
   type: string;
@@ -164,14 +50,11 @@ export interface Project {
   title: string;
   premise: string;
   mode: Mode;
-  creativeFreedom?: CreativeFreedom;
-  novelPlan?: NovelPlan;
+  creativeFreedom: CreativeFreedom;
   genre: string;
   world: string;
   style: string;
-  outline: string;
-  blueprintSections: BlueprintSection[];
-  blueprintCandidates: BlueprintCandidate[];
+  blueprint: Blueprint;
   color: string;
   createdAt: string;
   updatedAt: string;
@@ -182,25 +65,12 @@ export interface Chapter {
   projectId: string;
   title: string;
   position: number;
-  plan: string;
-  kind?: "chapter" | "fragment";
-  volumeId?: string | null;
-  planMeta?: Omit<PlanBlock, "content">;
-  scenes?: SceneOutline[];
-  planningReview?: string;
-  fragmentContext?: {
-    time: string;
-    place: string;
-    viewpoint: string;
-    connection: string;
-    anchorId?: string;
-  };
-  incorporatedInto?: string[];
   document: DocumentNode;
   content: string;
   acceptedRevisionId: string | null;
   dirty: boolean;
   needsReview: boolean;
+  planningReview?: string;
   updatedAt: string;
 }
 export interface Revision {
@@ -213,9 +83,27 @@ export interface Revision {
   label: string;
   createdAt: string;
 }
+export interface SourceDocument {
+  id: string;
+  name: string;
+  content: string;
+  enabled: boolean;
+}
+export interface CardSection {
+  id: string;
+  title: string;
+  content: string;
+  sourceIds: string[];
+}
+export interface RefinedMaterial {
+  description: string;
+  constraints: string;
+  sections: CardSection[];
+}
 export interface Card {
   id: string;
   projectId: string | null;
+  sourceCardId?: string | null;
   kind: CardKind;
   name: string;
   description: string;
@@ -225,56 +113,11 @@ export interface Card {
   referenceIds: string[];
   updatedAt: string;
 }
-export interface CardSection {
-  id: string;
-  title: string;
-  content: string;
-  alwaysInclude: boolean;
-  sourceIds: string[];
-}
-export interface SourceDocument {
-  id: string;
-  name: string;
-  content: string;
-  enabled: boolean;
-}
 export type CardInput = Omit<
   Card,
-  "id" | "updatedAt" | "sections" | "documents"
+  "id" | "updatedAt" | "sections" | "documents" | "sourceCardId"
 > &
   Partial<Pick<Card, "sections" | "documents">> & { id?: string };
-export interface MaterialDraft {
-  name: string;
-  description: string;
-  constraints: string;
-  sections: Omit<CardSection, "id">[];
-  questions: string[];
-}
-export type RoleId = TaskKind | "material" | "title";
-export interface AIRole {
-  id: RoleId;
-  prompt: string;
-  model: string;
-}
-export interface RoleSettings {
-  commonPrompt: string;
-  roles: AIRole[];
-}
-export interface MaterialCoverage {
-  card: string;
-  source: string;
-  included: number;
-  total: number;
-}
-export interface TaskPreview {
-  systemPrompt: string;
-  context: string;
-  model: string;
-  coverage: MaterialCoverage[];
-  omitted: number;
-  messages?: { role: "system" | "user" | "assistant"; content: string }[];
-  omittedTurns?: number;
-}
 export interface Memory {
   id: string;
   projectId: string;
@@ -294,12 +137,25 @@ export interface ImageAsset {
   kind: "reference" | "illustration" | "cover";
   name: string;
   notes?: string;
-  /** Portable path relative to data/assets; older records may use a flat filename. */
   filename: string;
   prompt: string;
   referenceIds: string[];
   model: string;
   createdAt: string;
+}
+export interface AIRole {
+  id: RoleId;
+  prompt: string;
+  model: string;
+}
+export interface RoleSettings {
+  commonPrompt: string;
+  roles: AIRole[];
+}
+export interface ModelCapabilities {
+  vision: boolean;
+  contextTokens: number;
+  outputTokens: number;
 }
 export interface ProviderConfig {
   baseUrl: string;
@@ -307,6 +163,7 @@ export interface ProviderConfig {
   model: string;
   selectedModels: string[];
   availableModels: string[];
+  capabilities: Record<string, ModelCapabilities>;
   hasKey: boolean;
 }
 export type CloseAction = "ask" | "minimize" | "quit";
@@ -365,7 +222,6 @@ export type SettingsInput = Pick<Settings, "imageSize" | "imageQuality"> & {
 export interface ProjectDetail {
   project: Project;
   chapters: Chapter[];
-  fragments?: Chapter[];
   cards: Card[];
   memories: Memory[];
   images: ImageAsset[];
@@ -377,33 +233,190 @@ export interface Bootstrap {
   settings: Settings;
   roles: RoleSettings;
 }
-export interface TaskRequest {
-  requestId: string;
-  kind: TaskKind;
-  projectId: string;
+export interface TextSelection {
+  text: string;
+  from: number;
+  to: number;
+}
+export interface BlueprintTarget {
+  level: BlueprintLevel;
+  id?: string;
+  parentId?: string;
   chapterId?: string;
+  count: number;
+}
+export type CheckScope =
+  | { type: "current"; chapterId: string }
+  | { type: "chapters"; chapterIds: string[] }
+  | { type: "book" };
+export type CheckAspect = "continuity" | "pacing" | "arc";
+export type PolishAspect = "expression" | "scene" | "dialogue";
+interface RequestBase {
+  requestId: string;
+  projectId: string;
+  mode: Mode;
   instruction: string;
-  selection?: string;
-  workflowContext?: string;
-  planningTarget?: PlanningTarget;
-  writingScope?: "selection" | "document";
-  outputMode?: "rewrite" | "analysis";
-  usePlanDraft?: boolean;
-  referenceNovelPlan?: boolean;
+  model?: string;
   conversationId?: string;
   parentTurnId?: string;
-  selectionRange?: { text: string; from: number; to: number };
 }
-export interface TaskResult {
+export type TaskRequest = RequestBase &
+  (
+    | { kind: "brainstorm" }
+    | { kind: "settings"; cardId?: string }
+    | { kind: "blueprint"; target: BlueprintTarget }
+    | { kind: "opening" | "continue" | "notes" | "title"; chapterId: string }
+    | {
+        kind: "polish";
+        chapterId: string;
+        selection: TextSelection;
+        aspect: PolishAspect;
+      }
+    | {
+        kind: "check";
+        scope: CheckScope;
+        aspect: CheckAspect;
+        character?: string;
+      }
+    | { kind: "prompt"; chapterId?: string; selection?: TextSelection }
+  );
+export type ChangeTarget =
+  | {
+      type: "setting";
+      cardId: string;
+      field: "description" | "constraints" | "section";
+      sectionId?: string;
+      cardKind: CardKind;
+      name: string;
+      title: string;
+    }
+  | { type: "project-setting"; field: "world" | "style" }
+  | { type: "blueprint"; node: BlueprintNode }
+  | {
+      type: "prose";
+      chapterId: string;
+      operation: "opening" | "append" | "selection";
+      selection?: TextSelection;
+    }
+  | { type: "title"; chapterId: string }
+  | { type: "memory"; chapterId: string; revisionId: string; kind: MemoryKind };
+export interface ProposedChange {
+  id: string;
+  target: ChangeTarget;
+  before: string;
+  after: string;
+  beforeTitle?: string;
+  afterTitle?: string;
+  targetBase: string;
+  applied: boolean;
+}
+export interface ChangeSet {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  turnId: string;
+  kind: TaskKind;
+  mode: Mode;
+  basis: string;
+  generationStatus: "complete";
+  status: "pending" | "partial" | "applied";
+  title: string;
+  changes: ProposedChange[];
+  createdAt: string;
+}
+export interface CheckFinding {
+  category: "conflict" | "question" | "suggestion";
+  chapterId: string;
+  quote: string;
+  reference: string;
+  impact: string;
+  suggestion: string;
+}
+export interface CheckBatch {
+  chapterId: string;
+  title: string;
+  sourceVersion: string;
+  status: "complete" | "failed";
+  error?: string;
+  findings: CheckFinding[];
+}
+export interface CheckReport {
+  aspect: CheckAspect;
+  batches: CheckBatch[];
+  comparisons: {
+    chapterIds: string[];
+    status: "complete" | "failed";
+    error?: string;
+  }[];
+  summary: string;
+  complete: boolean;
+}
+export type TaskResult =
+  | { type: "chat"; text: string }
+  | { type: "report"; text: string; report: CheckReport }
+  | { type: "changes"; text: string; changeSetId: string }
+  | { type: "illustration"; text: string };
+export interface CreationConversation {
+  id: string;
+  projectId: string;
+  mode: Mode;
+  kind: TaskKind;
+  key: string;
+  title: string;
+  request: TaskRequest;
+  selectedTurnId: string | null;
+  createdAt: string;
+}
+export interface CreationTurn {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  number: number;
+  parentTurnId: string | null;
+  instruction: string;
+  status: "generating" | "complete" | "stopped" | "error" | "interrupted";
+  rawResponse: string;
+  result: TaskResult | null;
+  sourceSnapshot: TaskPreview[];
+  error: string;
+  model: string;
+  createdAt: string;
+}
+export interface ConversationDetail {
+  conversation: CreationConversation;
+  turns: CreationTurn[];
+}
+export interface TextPart {
+  type: "text";
   text: string;
-  notesSaved?: number;
-  memoryRecords?: { kind: MemoryKind; content: string }[];
-  memoryRevisionId?: string;
-  developmentDraft?: StoryDevelopmentDraft;
-  planningDraft?: PlanningDraft;
-  resultType?: "prose" | "rewrite" | "analysis" | "planning";
-  conversationId?: string;
-  turnId?: string;
+}
+export interface ImagePart {
+  type: "image_url";
+  image_url: { url: string; detail?: "auto" | "high" | "low" };
+}
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string | (TextPart | ImagePart)[];
+}
+export interface ContextSource {
+  title: string;
+  priority: string;
+  characters: number;
+}
+export interface ReferencePreview {
+  id: string;
+  name: string;
+  owners: string[];
+  url: string;
+}
+export interface TaskPreview {
+  model: string;
+  messages: ChatMessage[];
+  sources: ContextSource[];
+  images: ReferencePreview[];
+  omitted: string[];
+  estimatedTokens: number;
+  batches?: { title: string; preview?: TaskPreview; error?: string }[];
 }
 export interface ImageRequest {
   projectId: string;

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { documentToText, textToDocument } from "../shared/document";
-import { normalizeChapterVolume } from "../shared/planning";
+import { validateBlueprint } from "../shared/blueprint";
 import {
   normalizeCard,
   materialLength,
@@ -22,13 +22,8 @@ import type {
   ProjectDetail,
   Revision,
   DocumentNode,
-  WorkflowRun,
-  WorkflowTemplate,
 } from "../shared/types";
-import {
-  normalizeProject,
-  defaultBlueprintSections,
-} from "../shared/blueprint";
+import { normalizeProject, emptyBlueprint } from "../shared/blueprint";
 
 const now = () => new Date().toISOString();
 function references(value: unknown, id: string): boolean {
@@ -96,6 +91,21 @@ export class StoryRepository {
     if (filename !== ":memory:")
       mkdirSync(dirname(filename), { recursive: true });
     this.db = new SQLiteConnection(filename);
+    const version = (
+      this.db.prepare("PRAGMA user_version").get() as { user_version: number }
+    ).user_version;
+    const hasTables =
+      this.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .all().length > 0;
+    if ((hasTables && version !== 2) || version > 2) {
+      this.db.close();
+      throw new Error(
+        "数据库格式不支持本次工作台重构。请使用新的空数据目录；本版本不迁移旧开发数据。",
+      );
+    }
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.exec(`
@@ -113,7 +123,9 @@ export class StoryRepository {
       CREATE INDEX IF NOT EXISTS idx_chapters_project ON chapters(project_id, position);
       CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id, active);
       CREATE INDEX IF NOT EXISTS idx_revisions_chapter ON revisions(chapter_id);
-      PRAGMA user_version = 1;
+      CREATE TABLE IF NOT EXISTS change_sets (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), payload TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_change_sets_project ON change_sets(project_id);
+      PRAGMA user_version = 2;
     `);
     for (const row of this.db
       .prepare("SELECT id, payload FROM creation_turns")
@@ -121,24 +133,14 @@ export class StoryRepository {
       const turn = JSON.parse(row.payload);
       if (turn.status === "generating") {
         turn.status = "interrupted";
-        turn.error = "上次生成因程序关闭而中断，已收到的内容已保留。";
+        turn.error = "上次生成因程序关闭而中断。";
         this.db
           .prepare("UPDATE creation_turns SET payload = ? WHERE id = ?")
           .run(JSON.stringify(turn), row.id);
       }
     }
-    const projects = this.db
-      .prepare("SELECT id, payload FROM projects")
-      .all() as { id: string; payload: string }[];
-    const migrate = this.db.prepare(
-      "UPDATE projects SET payload = ? WHERE id = ?",
-    );
-    for (const row of projects) {
-      const value = JSON.parse(row.payload) as Project;
-      if (!Array.isArray(value.blueprintSections) || value.outline?.trim())
-        migrate.run(JSON.stringify(normalizeProject(value)), row.id);
-    }
   }
+
   private all<T>(sql: string, ...args: unknown[]): T[] {
     return (this.db.prepare(sql).all(...args) as { payload: string }[]).map(
       (row) => JSON.parse(row.payload) as T,
@@ -175,8 +177,7 @@ export class StoryRepository {
     return normalizeProject(this.one<Project>("projects", id));
   }
   getChapter(id: string) {
-    const chapter = this.one<Chapter>("chapters", id);
-    return normalizeChapterVolume(chapter, this.getProject(chapter.projectId));
+    return this.one<Chapter>("chapters", id);
   }
   getRevision(id: string) {
     return this.one<Revision>("revisions", id);
@@ -195,10 +196,7 @@ export class StoryRepository {
     );
     return {
       project,
-      chapters: units
-        .filter((c) => c.kind !== "fragment")
-        .map((c) => normalizeChapterVolume(c, project)),
-      fragments: units.filter((c) => c.kind === "fragment"),
+      chapters: units,
       cards: this.all<Card>(
         "SELECT payload FROM cards WHERE project_id = ?",
         id,
@@ -236,9 +234,7 @@ export class StoryRepository {
         genre: input.genre || "未分类",
         world: "",
         style: "",
-        outline: "",
-        blueprintSections: defaultBlueprintSections(),
-        blueprintCandidates: [],
+        blueprint: emptyBlueprint(),
         color: ["sage", "sand", "rose", "slate"][
           this.listProjects().length % 4
         ],
@@ -253,7 +249,7 @@ export class StoryRepository {
         const source = this.getCard(id);
         if (source.projectId !== null)
           throw new Error("请选择资料库中的角色或世界观。");
-        this.saveCard({ ...source, id: undefined, projectId: project.id });
+        this.copyCard(source.id, project.id);
       }
       this.createChapter(project.id);
       return this.getProject(project.id);
@@ -261,30 +257,15 @@ export class StoryRepository {
   }
   updateProject(
     id: string,
-    patch: Partial<
-      Pick<
-        Project,
-        | "title"
-        | "premise"
-        | "mode"
-        | "creativeFreedom"
-        | "genre"
-        | "world"
-        | "style"
-        | "outline"
-        | "blueprintSections"
-        | "blueprintCandidates"
-        | "archived"
-        | "cover"
-        | "novelPlan"
-      >
-    >,
+    patch: Partial<Omit<Project, "id" | "createdAt" | "updatedAt">>,
   ) {
-    const project = normalizeProject({
-      ...this.getProject(id),
-      ...patch,
-      updatedAt: now(),
-    });
+    const previous = this.getProject(id);
+    const project = { ...previous, ...patch, updatedAt: now() };
+    if (patch.blueprint)
+      validateBlueprint(
+        patch.blueprint,
+        this.getDetail(id).chapters.map((c) => c.id),
+      );
     this.write("projects", project);
     return project;
   }
@@ -335,22 +316,22 @@ export class StoryRepository {
       this.db
         .prepare("DELETE FROM creation_conversations WHERE project_id = ?")
         .run(id);
+      this.db.prepare("DELETE FROM change_sets WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
       this.db
-        .prepare("DELETE FROM settings WHERE key = ?")
-        .run("scratch." + id);
-      this.db
-        .prepare("DELETE FROM settings WHERE key = ?")
-        .run("creation.imported." + id);
-      this.db
-        .prepare("DELETE FROM settings WHERE key = ?")
-        .run("planning.history." + id);
-      this.db
         .prepare("DELETE FROM settings WHERE key LIKE ?")
-        .run("workflow.run." + id + ".%");
+        .run("ui." + id + ".%");
       this.db
-        .prepare("DELETE FROM settings WHERE key = ? OR key LIKE ?")
-        .run(`development.undo.${id}`, `development.applied.${id}.%`);
+        .prepare("DELETE FROM settings WHERE key = ?")
+        .run("blueprint.history." + id);
+      for (const row of this.db
+        .prepare(
+          "SELECT key, value FROM settings WHERE key LIKE 'review.snapshot.%'",
+        )
+        .all() as { key: string; value: string }[]) {
+        if (JSON.parse(row.value).projectId === id)
+          this.db.prepare("DELETE FROM settings WHERE key = ?").run(row.key);
+      }
       const stillUsed = new Set(
         this.listImages().map((image) => image.filename),
       );
@@ -358,25 +339,6 @@ export class StoryRepository {
         (filename) => !stillUsed.has(filename),
       );
     })();
-  }
-  listWorkflowTemplates(): WorkflowTemplate[] {
-    return this.getSetting<WorkflowTemplate[]>("workflow.templates", []);
-  }
-  saveWorkflowTemplates(templates: WorkflowTemplate[]): WorkflowTemplate[] {
-    this.setSetting("workflow.templates", templates);
-    return templates;
-  }
-  listWorkflowRuns(projectId: string): WorkflowRun[] {
-    this.getProject(projectId);
-    return this.all<WorkflowRun>(
-      "SELECT value AS payload FROM settings WHERE key LIKE ?",
-      "workflow.run." + projectId + ".%",
-    ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }
-  saveWorkflowRun(run: WorkflowRun): WorkflowRun {
-    this.getProject(run.projectId);
-    this.setSetting(`workflow.run.${run.projectId}.${run.id}`, run);
-    return run;
   }
   private touch(projectId: string) {
     this.updateProject(projectId, {});
@@ -394,13 +356,6 @@ export class StoryRepository {
       projectId,
       title: `第${position}章`,
       position,
-      plan: "",
-      kind: "chapter",
-      volumeId:
-        project.mode === "novel"
-          ? project.novelPlan?.volumes[0]?.id
-          : undefined,
-      planMeta: {},
       document: textToDocument(""),
       content: "",
       acceptedRevisionId: null,
@@ -416,117 +371,41 @@ export class StoryRepository {
   }
   deleteChapter(id: string): ProjectDetail {
     return this.db.transaction(() => {
-      const chapter = this.getChapter(id);
-      const detail = this.getDetail(chapter.projectId);
-      const revisionIds = new Set(
-        this.listRevisions(id).map((revision) => revision.id),
-      );
-      const laterIds = new Set(
-        detail.chapters
-          .filter(
-            (item) =>
-              chapter.kind !== "fragment" && item.position > chapter.position,
-          )
-          .map((item) => item.id),
-      );
-
-      // Keep illustrations in the story, without references to deleted sources.
-      for (const image of this.listImages()) {
-        if (
-          image.chapterId === id ||
-          (image.revisionId && revisionIds.has(image.revisionId))
-        ) {
-          const preserved: ImageAsset = {
-            ...image,
-            chapterId: null,
-            revisionId: null,
-          };
-          this.write("images", preserved);
-        }
-      }
-      for (const memory of detail.memories) {
-        if (
-          memory.chapterId === id ||
-          (memory.revisionId && revisionIds.has(memory.revisionId))
-        ) {
-          this.db.prepare("DELETE FROM memories WHERE id = ?").run(memory.id);
-        } else if (
-          chapter.acceptedRevisionId &&
-          !memory.manual &&
-          memory.chapterId &&
-          laterIds.has(memory.chapterId)
-        ) {
-          this.setMemoryActive(memory.id, false);
-        }
-      }
+      const chapter = this.getChapter(id),
+        detail = this.getDetail(chapter.projectId);
+      for (const image of detail.images)
+        if (image.chapterId === id)
+          this.write("images", { ...image, chapterId: null, revisionId: null });
+      this.db.prepare("DELETE FROM memories WHERE chapter_id = ?").run(id);
       this.db.prepare("DELETE FROM revisions WHERE chapter_id = ?").run(id);
       this.db.prepare("DELETE FROM chapters WHERE id = ?").run(id);
-
-      const remaining = detail.chapters.filter((item) => item.id !== id);
-      for (const [index, item] of remaining.entries()) {
-        const updated = {
-          ...item,
-          position: index + 1,
-          needsReview:
-            item.needsReview ||
-            !!(
-              chapter.acceptedRevisionId &&
-              laterIds.has(item.id) &&
-              item.acceptedRevisionId
-            ),
-        };
-        if (updated.fragmentContext?.anchorId === id)
-          delete updated.fragmentContext.anchorId;
-        updated.incorporatedInto = updated.incorporatedInto?.filter(
-          (target) => target !== id,
-        );
+      const remaining = detail.chapters.filter((c) => c.id !== id);
+      for (const [i, c] of remaining.entries()) {
+        c.position = i + 1;
+        if (
+          chapter.acceptedRevisionId &&
+          c.position >= chapter.position &&
+          c.acceptedRevisionId
+        )
+          c.needsReview = true;
         this.db
           .prepare("UPDATE chapters SET position = ?, payload = ? WHERE id = ?")
-          .run(updated.position, JSON.stringify(updated), updated.id);
+          .run(c.position, JSON.stringify(c), c.id);
       }
-      for (const fragment of (detail.fragments ?? []).filter(
-        (f) => f.id !== id,
-      )) {
-        if (fragment.fragmentContext?.anchorId === id)
-          delete fragment.fragmentContext.anchorId;
-        fragment.incorporatedInto = fragment.incorporatedInto?.filter(
-          (target) => target !== id,
-        );
-        this.write("chapters", fragment);
-      }
-      const invalidSource = (value: unknown) =>
-        [...revisionIds].some((r) => references(value, r));
+      for (const memory of detail.memories)
+        if (
+          !memory.manual &&
+          memory.chapterId &&
+          remaining.some((c) => c.id === memory.chapterId && c.needsReview)
+        )
+          this.setMemoryActive(memory.id, false);
       this.updateProject(chapter.projectId, {
-        blueprintCandidates: detail.project.blueprintCandidates.map(
-          (candidate) =>
-            candidate.development && invalidSource(candidate.development)
-              ? {
-                  ...candidate,
-                  development: {
-                    ...candidate.development,
-                    warnings: [
-                      ...candidate.development.warnings,
-                      "来源章节已删除，此候选的正文依据已失效，请重新生成后采用。",
-                    ],
-                  },
-                }
-              : candidate,
-        ),
+        blueprint: {
+          nodes: detail.project.blueprint.nodes.map((n) =>
+            n.chapterId === id ? { ...n, chapterId: null } : n,
+          ),
+        },
       });
-      const undoKey = `development.undo.${chapter.projectId}`;
-      if (invalidSource(this.getSetting(undoKey, null)))
-        this.setSetting(undoKey, null);
-      const scratchKey = "scratch." + chapter.projectId;
-      const scratch = this.getSetting(scratchKey, null);
-      if (references(scratch, id) || invalidSource(scratch))
-        this.db.prepare("DELETE FROM settings WHERE key = ?").run(scratchKey);
-      for (const run of this.listWorkflowRuns(chapter.projectId)) {
-        if (run.chapterId === id || invalidSource(run))
-          this.db
-            .prepare("DELETE FROM settings WHERE key = ?")
-            .run(`workflow.run.${run.projectId}.${run.id}`);
-      }
-      this.touch(chapter.projectId);
       return this.getDetail(chapter.projectId);
     })();
   }
@@ -534,15 +413,11 @@ export class StoryRepository {
     id: string,
     patch: {
       title?: string;
-      plan?: string;
       document?: DocumentNode;
-      fragmentContext?: Chapter["fragmentContext"];
     },
   ): Chapter {
     const previous = this.getChapter(id);
     const chapter = { ...previous, ...patch, updatedAt: now() };
-    if (patch.plan !== undefined && !chapter.planMeta)
-      chapter.planMeta = { confirmed: previous.plan };
     if (patch.document) chapter.content = documentToText(patch.document);
     const accepted = chapter.acceptedRevisionId
       ? this.getRevision(chapter.acceptedRevisionId)
@@ -593,6 +468,11 @@ export class StoryRepository {
     for (const image of this.listImages())
       if (image.revisionId === id) usage.push(`插画来源：${image.name}`);
     for (const row of this.db
+      .prepare("SELECT payload FROM change_sets WHERE project_id = ?")
+      .all(projectId) as { payload: string }[])
+      if (references(JSON.parse(row.payload), id))
+        usage.push("AI 待审核修改来源");
+    for (const row of this.db
       .prepare("SELECT payload FROM creation_turns WHERE project_id = ?")
       .all(projectId) as { payload: string }[])
       if (references(JSON.parse(row.payload), id))
@@ -604,22 +484,12 @@ export class StoryRepository {
       .all(projectId) as { payload: string }[])
       if (references(JSON.parse(row.payload), id))
         usage.push("AI 创作对话来源");
-    for (const p of this.listProjects())
-      for (const candidate of p.blueprintCandidates)
-        if (references(candidate.development, id))
-          usage.push(`设定候选：${p.title} / ${candidate.title}`);
     for (const row of this.db
       .prepare("SELECT key, value FROM settings")
       .all() as { key: string; value: string }[])
       if (references(JSON.parse(row.value), id))
         usage.push(
-          row.key.startsWith("scratch.")
-            ? "AI 暂存草稿"
-            : row.key.startsWith("workflow.run.")
-              ? "工作流记录"
-              : row.key.startsWith("development.undo.")
-                ? "设定更新撤销记录"
-                : "保存的来源记录",
+          row.key.startsWith("scratch.") ? "AI 暂存草稿" : "保存的来源记录",
         );
     return [...new Set(usage)];
   }
@@ -654,8 +524,6 @@ export class StoryRepository {
   adoptChapter(id: string): Chapter {
     return this.db.transaction(() => {
       const chapter = this.getChapter(id);
-      if (chapter.kind === "fragment")
-        throw new Error("请先将片段编入章节，再采用并整理正式记忆。");
       if (!chapter.content.trim())
         throw new Error("先写下一些正文，再采用这一章。");
       if (!chapter.dirty && !chapter.needsReview) return chapter;
@@ -693,20 +561,34 @@ export class StoryRepository {
       return chapter;
     })();
   }
-  saveCard(input: CardInput): Card {
-    if (materialLength(input) > materialLimits.card)
+  saveCard(input: CardInput, createId?: string): Card {
+    if (materialLength({ ...input, documents: [] }) > materialLimits.card)
       throw new Error("单份资料总量超过 40 万字，请拆成多个资料条目。");
     if (input.projectId) this.getProject(input.projectId);
     if (input.id) {
       const existing = this.getCard(input.id);
       if (existing.projectId !== input.projectId)
         throw new Error("不能移动资料所属的故事，请复制资料。");
+      if (existing.projectId && existing.sourceCardId)
+        throw new Error(
+          "从创作资料引入的资料为只读，不能修改。请在创作资料库中编辑后重新引入。",
+        );
     }
+    if (
+      createId &&
+      (input.id ||
+        this.db.prepare("SELECT id FROM cards WHERE id = ?").get(createId))
+    )
+      throw new Error("新资料标识已存在。");
     const card: Card = {
       ...input,
-      sections: input.sections ?? [],
-      documents: input.documents ?? [],
-      id: input.id || randomUUID(),
+      sourceCardId: null,
+      sections: (input.sections ?? []).map((section) => ({
+        ...section,
+        sourceIds: [],
+      })),
+      documents: [],
+      id: input.id || createId || randomUUID(),
       updatedAt: now(),
     };
     this.db
@@ -718,7 +600,12 @@ export class StoryRepository {
   }
   copyCard(id: string, projectId: string | null): Card {
     const source = this.getCard(id);
-    return this.saveCard({ ...source, id: undefined, projectId });
+    return this.db.transaction(() => {
+      const card = this.saveCard({ ...source, id: undefined, projectId });
+      card.sourceCardId = projectId ? source.sourceCardId || source.id : null;
+      this.write("cards", card);
+      return card;
+    })();
   }
   deleteCard(id: string): Card {
     const card = this.getCard(id);
@@ -769,38 +656,6 @@ export class StoryRepository {
       .run(active ? 1 : 0, JSON.stringify(memory), id);
     return memory;
   }
-  saveGeneratedMemories(
-    chapterId: string,
-    revisionId: string,
-    records: { kind: MemoryKind; content: string }[],
-  ): number {
-    return this.db.transaction(() => {
-      const chapter = this.getChapter(chapterId);
-      if (chapter.acceptedRevisionId !== revisionId || chapter.needsReview)
-        throw new Error(
-          "章节版本已变化，本次记忆未写入。请基于最新采用版本重新整理。",
-        );
-      const revision = this.getRevision(revisionId);
-      if (revision.chapterId !== chapterId)
-        throw new Error("记忆来源不属于当前章节。");
-      for (const memory of this.getDetail(chapter.projectId).memories.filter(
-        (m) => m.chapterId === chapterId && !m.manual && m.active,
-      ))
-        this.setMemoryActive(memory.id, false);
-      for (const record of records)
-        this.insertMemory({
-          ...record,
-          id: randomUUID(),
-          projectId: chapter.projectId,
-          chapterId,
-          revisionId,
-          active: true,
-          manual: false,
-          createdAt: now(),
-        });
-      return records.length;
-    })();
-  }
   updateMemory(
     projectId: string,
     id: string,
@@ -848,11 +703,11 @@ export class StoryRepository {
         usage.push(`图片参考来源：${image.name}`);
     for (const row of this.db
       .prepare(
-        "SELECT key, value FROM settings WHERE key LIKE 'development.undo.%'",
+        "SELECT key, value FROM settings WHERE key LIKE 'review.snapshot.%'",
       )
       .all() as { key: string; value: string }[])
       if (references(JSON.parse(row.value), id))
-        usage.push("设定更新撤销记录中的图片关联");
+        usage.push("修改审核快照中的图片关联");
     return usage;
   }
   updateImage(id: string, name: string, notes: string) {
