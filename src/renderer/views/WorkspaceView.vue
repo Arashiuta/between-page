@@ -9,6 +9,13 @@ import {
   NPopconfirm,
   NCheckbox,
 } from "naive-ui";
+import {
+  ChevronLeft,
+  Download,
+  GripVertical,
+  Plus,
+  Trash2,
+} from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import type { Card, ProjectDetail, Revision } from "../../shared/types";
 import { memoryLabels } from "../../shared/types";
@@ -215,8 +222,23 @@ async function checkpoint() {
 <template>
   <main v-if="store.detail && !loading" class="studio-page">
     <header class="studio-heading">
-      <button class="text-button" @click="router.push('/')">← 书架</button>
-      <h1>{{ store.detail.project.title }}</h1>
+      <button
+        class="studio-back"
+        aria-label="返回书架"
+        title="返回书架"
+        @click="router.push('/')"
+      >
+        <ChevronLeft :size="18" />
+      </button>
+      <div class="studio-title">
+        <small
+          >{{
+            store.detail.project.mode === "novel" ? "长篇创作" : "自由探索"
+          }}
+          · {{ store.detail.chapters.length }} 章</small
+        >
+        <h1>{{ store.detail.project.title }}</h1>
+      </div>
       <NSelect
         :value="store.detail.project.mode"
         :options="[
@@ -233,7 +255,7 @@ async function checkpoint() {
             await store.api('project:export', store.detail!.project.id);
           })
         "
-        >导出正文</NButton
+        ><template #icon><Download :size="15" /></template>导出正文</NButton
       >
     </header>
     <nav class="studio-tabs">
@@ -249,9 +271,10 @@ async function checkpoint() {
     <div class="studio-body">
       <aside class="studio-chapters">
         <div class="section-toolbar">
-          <strong>章节</strong
+          <strong>章节目录</strong
           ><NButton
             size="tiny"
+            secondary
             :disabled="store.busy"
             @click="
               store.safe(async () => {
@@ -259,7 +282,7 @@ async function checkpoint() {
                 tab = 'text';
               })
             "
-            >＋ 新章</NButton
+            ><template #icon><Plus :size="13" /></template>新章</NButton
           >
         </div>
         <article
@@ -296,10 +319,15 @@ async function checkpoint() {
               })
             "
           >
-            <small
-              >第 {{ i + 1 }} 章 · {{ c.dirty ? "草稿" : "已采用"
-              }}{{ c.needsReview ? " · 待复核" : "" }}</small
-            >{{ c.title }}
+            <span class="chapter-index">{{
+              String(i + 1).padStart(2, "0")
+            }}</span
+            ><span class="chapter-text"
+              ><small
+                >第 {{ i + 1 }} 章 · {{ c.dirty ? "草稿" : "已采用"
+                }}{{ c.needsReview ? " · 待复核" : "" }}</small
+              >{{ c.title }}</span
+            >
           </button>
           <div class="chapter-row-actions">
             <button
@@ -312,13 +340,16 @@ async function checkpoint() {
               @dragend="endChapterDrag"
               @click.stop
             >
-              ⠿</button
+              <GripVertical :size="14" /></button
             ><NPopconfirm
               @positive-click="store.safe(() => store.deleteChapter(c.id))"
               ><template #trigger
-                ><button :disabled="store.busy" aria-label="删除章节">
-                  删除
-                </button></template
+                ><button
+                  :disabled="store.busy"
+                  aria-label="删除章节"
+                  title="删除章节"
+                >
+                  <Trash2 :size="13" /></button></template
               >删除本章、历史版本和关联记忆？</NPopconfirm
             >
           </div>
@@ -456,58 +487,60 @@ async function checkpoint() {
                 }
               "
             />
-            <div class="prose-footer">
-              <span
-                >{{ store.chapter.content.replace(/\s/g, "").length }} 字 ·
-                {{ store.chapter.dirty ? "未采用修改" : "已采用版本" }}</span
-              ><NButton
-                size="small"
-                :disabled="store.busy"
-                @click="store.safe(checkpoint)"
-                >保存快照</NButton
-              ><NButton
-                type="primary"
-                size="small"
-                :disabled="store.busy || !store.chapter.content.trim()"
-                @click="store.safe(store.adopt)"
-                >采用本章</NButton
-              >
-            </div>
-            <div class="workbench-actions">
-              <NButton
-                :disabled="store.busy"
-                @click="
-                  store.safe(() =>
-                    tool(
-                      store.chapter!.content.trim() ? 'continue' : 'opening',
-                    ),
-                  )
-                "
-                >{{
-                  store.chapter.content.trim() ? "从文末续写" : "写开篇"
-                }}</NButton
-              ><NButton
-                :disabled="store.busy || !store.selection"
-                @click="store.safe(() => tool('polish'))"
-                >打磨选中文段</NButton
-              ><NButton
-                :disabled="store.busy"
-                @click="store.safe(() => tool('check'))"
-                >检查故事</NButton
-              ><NButton
-                v-if="
-                  store.chapter.content.trim() &&
-                  store.detail.project.mode === 'novel'
-                "
-                :disabled="store.busy"
-                @click="
-                  store.safe(async () => {
-                    await store.newChapter();
-                    await tool('opening');
-                  })
-                "
-                >新建下一章</NButton
-              >
+            <div class="prose-dock">
+              <div class="prose-footer">
+                <span
+                  >{{ store.chapter.content.replace(/\s/g, "").length }} 字 ·
+                  {{ store.chapter.dirty ? "未采用修改" : "已采用版本" }}</span
+                ><NButton
+                  size="small"
+                  :disabled="store.busy"
+                  @click="store.safe(checkpoint)"
+                  >保存快照</NButton
+                ><NButton
+                  type="primary"
+                  size="small"
+                  :disabled="store.busy || !store.chapter.content.trim()"
+                  @click="store.safe(store.adopt)"
+                  >采用本章</NButton
+                >
+              </div>
+              <div class="workbench-actions">
+                <NButton
+                  :disabled="store.busy"
+                  @click="
+                    store.safe(() =>
+                      tool(
+                        store.chapter!.content.trim() ? 'continue' : 'opening',
+                      ),
+                    )
+                  "
+                  >{{
+                    store.chapter.content.trim() ? "从文末续写" : "写开篇"
+                  }}</NButton
+                ><NButton
+                  :disabled="store.busy || !store.selection"
+                  @click="store.safe(() => tool('polish'))"
+                  >打磨选中文段</NButton
+                ><NButton
+                  :disabled="store.busy"
+                  @click="store.safe(() => tool('check'))"
+                  >检查故事</NButton
+                ><NButton
+                  v-if="
+                    store.chapter.content.trim() &&
+                    store.detail.project.mode === 'novel'
+                  "
+                  :disabled="store.busy"
+                  @click="
+                    store.safe(async () => {
+                      await store.newChapter();
+                      await tool('opening');
+                    })
+                  "
+                  >新建下一章</NButton
+                >
+              </div>
             </div>
             <DirectionsPanel
               v-if="
@@ -743,7 +776,7 @@ async function checkpoint() {
   align-items: center;
   gap: 16px;
   padding: 18px 24px;
-  border-bottom: 1px solid #e0e5eb;
+  border-bottom: 1px solid var(--border);
 }
 .studio-heading h1 {
   font-size: 22px;
@@ -757,7 +790,7 @@ async function checkpoint() {
   display: flex;
   gap: 22px;
   padding: 0 24px;
-  border-bottom: 1px solid #dce2e9;
+  border-bottom: 1px solid var(--border);
 }
 .studio-tabs {
   overflow-x: auto;
@@ -773,8 +806,8 @@ async function checkpoint() {
   cursor: pointer;
 }
 .studio-tabs button.active {
-  border-bottom-color: #557762;
-  color: #3b6149;
+  border-bottom-color: var(--primary);
+  color: var(--primary);
 }
 .studio-body {
   display: flex;
@@ -785,7 +818,7 @@ async function checkpoint() {
   width: 190px;
   flex-shrink: 0;
   overflow: auto;
-  border-right: 1px solid #dce2e9;
+  border-right: 1px solid var(--border);
   padding: 18px 12px;
 }
 .studio-chapters article {
@@ -794,16 +827,16 @@ async function checkpoint() {
   margin-top: 9px;
 }
 .studio-chapters article.active {
-  background: #e6eee9;
+  background: var(--accent-soft);
 }
 .studio-chapters article.chapter-dragging {
   opacity: 0.45;
 }
 .studio-chapters article.chapter-drop-before {
-  box-shadow: 0 -2px 0 var(--accent);
+  box-shadow: 0 -2px 0 var(--primary);
 }
 .studio-chapters article.chapter-drop-after {
-  box-shadow: 0 2px 0 var(--accent);
+  box-shadow: 0 2px 0 var(--primary);
 }
 .chapter-row-actions .chapter-drag-handle {
   cursor: grab;
@@ -828,7 +861,7 @@ async function checkpoint() {
 .chapter-link small {
   display: block;
   font-size: 10px;
-  color: #7a8490;
+  color: var(--muted);
   margin-bottom: 5px;
 }
 .chapter-row-actions {
@@ -841,7 +874,7 @@ async function checkpoint() {
   background: transparent;
   cursor: pointer;
   font-size: 11px;
-  color: #7a8490;
+  color: var(--muted);
 }
 .studio-content {
   flex: 1;
@@ -875,7 +908,7 @@ async function checkpoint() {
 .prose-footer span {
   flex: 1;
   font-size: 12px;
-  color: #7c8692;
+  color: var(--muted);
 }
 .overview-links {
   display: grid;
@@ -884,7 +917,7 @@ async function checkpoint() {
   margin-top: 24px;
 }
 .overview-links button {
-  border: 1px solid #dce2e9;
+  border: 1px solid var(--border);
   border-radius: 9px;
   background: transparent;
   padding: 25px 10px;
@@ -894,7 +927,7 @@ async function checkpoint() {
 }
 .overview-links small {
   display: inline-block;
-  color: #7b8591;
+  color: var(--muted);
   margin-top: 8px;
 }
 .setting-cards {
@@ -904,7 +937,7 @@ async function checkpoint() {
   margin-top: 25px;
 }
 .setting-cards article {
-  border: 1px solid #dce2e9;
+  border: 1px solid var(--border);
   border-radius: 9px;
   padding: 17px;
 }
@@ -925,14 +958,14 @@ async function checkpoint() {
 }
 .memory-entry {
   padding: 17px 0;
-  border-bottom: 1px solid #dce2e9;
+  border-bottom: 1px solid var(--border);
 }
 .memory-entry p {
   white-space: pre-wrap;
 }
 .memory-entry small {
   margin-right: 15px;
-  color: #7c8692;
+  color: var(--muted);
 }
 .history-row {
   display: flex;
@@ -1048,6 +1081,286 @@ async function checkpoint() {
   .studio-text,
   .studio-section {
     padding: 14px;
+  }
+}
+
+/* —— 现代化外观层：仅视觉 —— */
+.studio-page {
+  background: var(--page);
+}
+.studio-heading {
+  gap: 14px;
+  padding: 14px 24px 10px;
+  border-bottom: 0;
+}
+.studio-back {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-soft);
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+.studio-back:hover {
+  color: var(--primary);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.studio-title {
+  flex: 1;
+  min-width: 0;
+}
+.studio-title small {
+  display: block;
+  font-size: 0.785714rem;
+  letter-spacing: 1.5px;
+  color: var(--gold-ink);
+  margin-bottom: 2px;
+}
+.studio-heading h1 {
+  font-family: var(--serif);
+  font-size: 1.571429rem;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  line-height: 1.3;
+}
+.studio-tabs {
+  gap: 4px;
+  margin: 0 24px 12px;
+  padding: 4px;
+  width: fit-content;
+  max-width: calc(100% - 48px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+.studio-tabs button {
+  padding: 7px 14px;
+  border-bottom: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 0.928571rem;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    box-shadow 0.15s;
+}
+.studio-tabs button:hover {
+  color: var(--ink);
+}
+.studio-tabs button.active {
+  color: var(--ink);
+  background: var(--surface);
+  font-weight: 600;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 0 0 1px var(--border);
+}
+.studio-body {
+  border-top: 1px solid var(--border);
+}
+.studio-chapters {
+  width: 214px;
+  padding: 16px 12px;
+  background: var(--surface-muted);
+}
+.studio-chapters .section-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 6px;
+}
+.studio-chapters .section-toolbar strong {
+  font-size: 0.785714rem;
+  letter-spacing: 2px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.studio-chapters article {
+  position: relative;
+  margin-top: 4px;
+  padding: 8px 8px 6px;
+  border-radius: 10px;
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
+}
+.studio-chapters article:hover {
+  background: var(--hover-color);
+}
+.studio-chapters article.active {
+  background: var(--surface);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.06),
+    0 0 0 1px var(--border);
+}
+.studio-chapters article.active .chapter-index {
+  color: var(--on-primary);
+  background: var(--primary);
+}
+.chapter-link {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 0.928571rem;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.chapter-index {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  font-family: var(--serif);
+  font-size: 0.785714rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.chapter-text {
+  min-width: 0;
+}
+.chapter-link small {
+  font-size: 0.714286rem;
+  margin-bottom: 2px;
+}
+.chapter-row-actions {
+  margin-top: 2px;
+  padding-left: 32px;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.studio-chapters article:hover .chapter-row-actions,
+.studio-chapters article.active .chapter-row-actions,
+.chapter-row-actions:focus-within {
+  opacity: 1;
+}
+.chapter-row-actions button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+}
+.chapter-row-actions button:hover:not(:disabled) {
+  background: var(--hover-color);
+  color: var(--ink);
+}
+.chapter-row-actions button[aria-label="删除章节"]:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.studio-text {
+  padding: 22px 28px 0;
+  max-width: 900px;
+}
+.prose-heading .n-input {
+  font-family: var(--serif);
+  font-size: 1.142857rem;
+}
+.prose-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  margin: 14px -8px 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 14px 14px 0 0;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.05);
+}
+.prose-dock .prose-footer {
+  margin: 0;
+}
+.prose-dock .workbench-actions {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.studio-text > :deep(.directions-panel) {
+  margin-bottom: 24px;
+}
+.studio-section {
+  padding: 28px 32px;
+}
+.studio-section > h2 {
+  font-family: var(--serif);
+  font-size: 1.428571rem;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.overview-links button {
+  position: relative;
+  text-align: left;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: var(--surface);
+  font-family: var(--serif);
+  font-size: 1.071429rem;
+  font-weight: 600;
+  transition:
+    transform 0.15s,
+    box-shadow 0.15s,
+    border-color 0.15s;
+}
+.overview-links button::after {
+  content: "→";
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  color: var(--muted);
+  font-family: inherit;
+}
+.overview-links button:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-line);
+  box-shadow: var(--shadow-md);
+}
+.overview-links small {
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-weight: 400;
+  font-size: 0.857143rem;
+}
+.setting-cards article {
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.chapter-planning {
+  border-radius: 14px;
+  border-left: 3px solid var(--gold);
+}
+@media (max-width: 1050px) {
+  .studio-tabs {
+    margin: 0 12px 10px;
+    max-width: calc(100% - 24px);
+  }
+  .chapter-row-actions {
+    opacity: 1;
+    padding-left: 0;
+  }
+}
+@media (max-width: 1250px) {
+  .studio-chapters {
+    width: 168px;
+    padding: 14px 8px;
+  }
+  .studio-text {
+    padding: 18px 18px 0;
   }
 }
 </style>

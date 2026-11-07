@@ -8,6 +8,16 @@ import {
   NModal,
   NPopconfirm,
 } from "naive-ui";
+import {
+  Lightbulb,
+  ScrollText,
+  ListTree,
+  PenLine,
+  Sparkles,
+  ScanSearch,
+  NotebookPen,
+  Palette,
+} from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import { toolGroups, toolNames, modeTools } from "../../shared/tools";
 import { effectiveRole } from "../../shared/roles";
@@ -43,6 +53,16 @@ const selectedGroup = computed(() =>
 );
 const tools = computed(() => selectedGroup.value?.kinds ?? [store.taskKind]);
 const mode = computed(() => store.detail!.project.mode);
+const groupIcons: Record<string, unknown> = {
+  brainstorm: Lightbulb,
+  blueprint: ScrollText,
+  outline: ListTree,
+  writing: PenLine,
+  polish: Sparkles,
+  checking: ScanSearch,
+  notes: NotebookPen,
+  prompt: Palette,
+};
 const availableGroups = computed(() =>
   toolGroups.filter((g) => g.id !== "outline" || mode.value === "novel"),
 );
@@ -180,6 +200,7 @@ async function run() {
 <template>
   <aside class="studio-workbench">
     <header>
+      <span class="workbench-mark"><Sparkles :size="16" /></span>
       <h2>创作工具</h2>
       <span
         >{{ mode === "novel" ? "长篇创作" : "自由探索" }} ·
@@ -201,7 +222,7 @@ async function run() {
         :disabled="store.busy"
         @click="store.safe(() => choose(g.id))"
       >
-        {{ g.name }}
+        <component :is="groupIcons[g.id]" :size="17" /><span>{{ g.name }}</span>
       </button>
     </div>
     <div class="tool-form">
@@ -528,7 +549,7 @@ async function run() {
 .studio-workbench {
   width: 390px;
   flex-shrink: 0;
-  border-left: 1px solid #dce2e9;
+  border-left: 1px solid var(--border);
   background: var(--surface, #fff);
   overflow-y: auto;
   padding: 22px;
@@ -541,7 +562,7 @@ async function run() {
 }
 .studio-workbench header span {
   display: block;
-  color: #77818d;
+  color: var(--muted);
   font-size: 12px;
   margin-top: 6px;
   overflow-wrap: anywhere;
@@ -553,7 +574,7 @@ async function run() {
   margin: 20px 0;
 }
 .tool-grid button {
-  border: 1px solid #dce2e9;
+  border: 1px solid var(--border);
   background: transparent;
   border-radius: 7px;
   padding: 10px;
@@ -561,9 +582,9 @@ async function run() {
   color: inherit;
 }
 .tool-grid button.active {
-  border-color: #526f5c;
-  background: #e6eee9;
-  color: #294c36;
+  border-color: var(--primary);
+  background: var(--accent-soft);
+  color: var(--primary);
 }
 .tool-form h3 {
   margin: 10px 0;
@@ -573,7 +594,7 @@ async function run() {
   margin-bottom: 7px;
 }
 .conversation-controls {
-  border-top: 1px solid #e1e5eb;
+  border-top: 1px solid var(--border);
   padding-top: 15px;
   margin-top: 18px;
 }
@@ -595,12 +616,12 @@ async function run() {
   margin-top: 15px;
 }
 .chat-messages article {
-  border-bottom: 1px solid #e2e7ec;
+  border-bottom: 1px solid var(--border);
   padding-bottom: 15px;
   margin-bottom: 15px;
 }
 .chat-user {
-  background: #e9eff5;
+  background: var(--accent-soft);
   padding: 12px;
   border-radius: 8px;
 }
@@ -612,10 +633,10 @@ async function run() {
   overflow: auto;
   margin: 10px 0;
   padding: 10px;
-  background: #f0f4f7;
+  background: var(--surface-muted);
 }
 .review-error {
-  color: #b42318;
+  color: var(--danger);
   white-space: pre-wrap;
 }
 .result-versions {
@@ -670,5 +691,125 @@ async function run() {
   gap: 7px;
   flex-wrap: wrap;
   margin-top: 12px;
+}
+
+/* —— 现代化外观层：仅视觉 —— */
+.studio-workbench {
+  width: 380px;
+  padding: 20px 20px 28px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+}
+.studio-workbench header {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 10px;
+  align-items: center;
+  padding-bottom: 16px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.workbench-mark {
+  grid-row: span 2;
+  width: 34px;
+  height: 34px;
+  display: grid !important;
+  place-items: center;
+  margin: 0 !important;
+  border-radius: 10px;
+  color: var(--gold-ink) !important;
+  background: var(--gold-soft);
+  border: 1px solid color-mix(in srgb, var(--gold) 35%, transparent);
+}
+.studio-workbench header h2 {
+  font-family: var(--serif);
+  font-size: 1.214286rem;
+  letter-spacing: 1px;
+}
+.studio-workbench header span:not(.workbench-mark) {
+  margin-top: 2px;
+}
+.tool-grid {
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin: 16px 0 18px;
+}
+.tool-grid button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 2px 8px;
+  border-radius: 12px;
+  border-color: transparent;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 0.785714rem;
+  line-height: 1.25;
+  text-align: center;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s,
+    transform 0.15s;
+}
+.tool-grid button svg {
+  color: var(--muted);
+  transition: color 0.15s;
+}
+.tool-grid button:hover:not(:disabled) {
+  background: var(--hover-color);
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+.tool-grid button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--primary);
+  font-weight: 600;
+}
+.tool-grid button.active svg {
+  color: var(--primary);
+}
+.tool-form {
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-muted) 55%, var(--surface));
+}
+.tool-form h3 {
+  margin: 0 0 6px;
+  font-family: var(--serif);
+  font-size: 1.071429rem;
+  letter-spacing: 0.5px;
+}
+.conversation-controls {
+  border-top-style: dashed;
+}
+.chat-user {
+  margin-left: 24px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+.chat-assistant {
+  padding: 12px 14px;
+  border-radius: 14px 14px 14px 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.chat-messages article {
+  border-bottom: 0;
+}
+.selection-preview {
+  border-left: 3px solid var(--gold);
+  border-radius: 0 8px 8px 0;
+  font-family: var(--serif);
+}
+@media (max-width: 1250px) {
+  .studio-workbench {
+    width: 330px;
+    padding: 16px 14px 24px;
+  }
 }
 </style>
