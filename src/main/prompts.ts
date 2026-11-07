@@ -26,6 +26,7 @@ const draftExcerpt = (value: string) =>
 export function buildTask(
   repo: StoryRepository,
   request: TaskRequest,
+  sourceOverride?: { content?: string; memoryRevisionId?: string },
 ): {
   messages: ChatMessage[];
   revisionId?: string;
@@ -35,11 +36,15 @@ export function buildTask(
   developmentSnapshot?: DevelopmentSnapshot;
 } {
   const detail = repo.getDetail(request.projectId);
-  const chapter = request.chapterId
+  const storedChapter = request.chapterId
     ? [...detail.chapters, ...(detail.fragments ?? [])].find(
         (c) => c.id === request.chapterId,
       )
     : undefined;
+  const chapter =
+    storedChapter && sourceOverride?.content !== undefined
+      ? { ...storedChapter, content: sourceOverride.content }
+      : storedChapter;
   if (request.chapterId && !chapter)
     throw new Error("当前章节不属于这个故事。");
   if (
@@ -68,6 +73,11 @@ export function buildTask(
   let revisionId: string | undefined;
   let source = "";
   if (request.kind === "notes") {
+    if (
+      sourceOverride?.memoryRevisionId &&
+      chapter?.acceptedRevisionId !== sourceOverride.memoryRevisionId
+    )
+      throw new Error("来源采用版本已变化，请为最新版本新建记忆整理对话。");
     if (chapter?.kind === "fragment")
       throw new Error("独立片段不能整理正式记忆，请先编入并采用章节。");
     if (!chapter?.acceptedRevisionId || chapter.needsReview)

@@ -31,6 +31,7 @@ import { chapterPlan, planText } from "../../shared/planning";
 import type { TaskKind, TaskPreview, ProjectDetail } from "../../shared/types";
 import { memoryLabels } from "../../shared/types";
 import brandMark from "../assets/brand-mark.svg";
+import ConversationHistory from "./ConversationHistory.vue";
 
 const store = useWorkspace();
 const emit = defineEmits<{
@@ -58,6 +59,20 @@ const selectedTool = computed({
 const applyingMemory = ref(false);
 
 const categories = toolGroups;
+watch(
+  () => [
+    store.taskKind,
+    store.chapterId,
+    JSON.stringify(store.planningTarget),
+    store.writingScope,
+    store.outputMode,
+    JSON.stringify(store.selection),
+  ],
+  () => {
+    if (!store.busy && !store.conversationLoading)
+      void store.safe(store.restoreConversation);
+  },
+);
 watch(
   selectedTool,
   (value) => {
@@ -148,28 +163,49 @@ const selectedPlans = ref<string[]>([]);
 watch(
   () => store.planningDraft,
   (draft) => {
-    selectedPlans.value = draft?.items.map((i) => i.id) ?? [];
+    selectedPlans.value =
+      draft?.items
+        .filter((i) => !draft.appliedIds?.includes(i.id))
+        .map((i) => i.id) ?? [];
   },
 );
 async function applyPlanning() {
   if (!store.planningDraft) return;
+  const draft = JSON.parse(JSON.stringify(store.planningDraft));
+  const chosenIds = [...selectedPlans.value],
+    turnId = store.selectedTurnId;
   await store.flush();
   const result = await store.api<{ detail: ProjectDetail; base: string }>(
     "planning:apply",
-    { draft: store.planningDraft, selectedIds: selectedPlans.value },
+    {
+      draft,
+      selectedIds: chosenIds,
+      turnId: turnId || undefined,
+    },
   );
+  if (store.detail?.project.id !== draft.projectId) return;
   store.detail = result.detail;
+  if (turnId !== store.selectedTurnId) return;
   const remaining = store.planningDraft.items.filter(
-    (i) => !selectedPlans.value.includes(i.id),
+    (i) => !chosenIds.includes(i.id),
   );
-  store.planningDraft = remaining.length
-    ? { ...store.planningDraft, base: result.base, items: remaining }
-    : null;
-  if (!remaining.length) {
+  if (store.selectedTurn) {
+    store.planningDraft = {
+      ...store.planningDraft,
+      base: result.base,
+      appliedIds: [...(store.planningDraft.appliedIds ?? []), ...chosenIds],
+    };
+  } else {
+    store.planningDraft = remaining.length
+      ? { ...store.planningDraft, base: result.base, items: remaining }
+      : null;
+  }
+  if (!remaining.length && !store.selectedTurn) {
     store.output = "";
     store.resultType = null;
   }
   store.scratch();
+  if (store.selectedTurn) store.selectedTurn.applied.push("已采用所选规划");
   store.notify("所选规划已采用，可在总纲与章节规划中继续编辑。");
 }
 
@@ -204,12 +240,14 @@ async function useResult(kind: "develop" | "chapter") {
   await store.runTask(kind, {
     instruction: nextInstruction,
     workflowContext: context,
+    newConversation: true,
   });
 }
 
-function applyPlan() {
+async function applyPlan() {
   if (!store.chapter || store.outputChapterId !== store.chapter.id) return;
   store.editChapter({ plan: store.output });
+  await store.markResultApplied("已写入本章计划");
   store.notify("已写入本章计划，后续写作会参考。");
 }
 
@@ -219,12 +257,16 @@ async function inspect() {
   await store.safe(async () => {
     await store.flush();
     preview.value = await store.api<TaskPreview>("ai:preview", {
+      ...store.currentTaskRequest(),
+      conversationId: store.conversationId || undefined,
+      parentTurnId: store.selectedTurnId || undefined,
       requestId: crypto.randomUUID(),
       kind: selectedTool.value,
       projectId: store.detail!.project.id,
       chapterId: store.chapter?.id,
       instruction: instruction.value,
-      selection: store.selection?.text,
+      selection: store.currentTaskRequest().selection,
+      selectionRange: store.currentTaskRequest().selectionRange,
       planningTarget: ["outline", "adjust"].includes(selectedTool.value)
         ? (store.planningTarget ??
           (store.detail!.project.mode === "novel"
@@ -233,11 +275,7 @@ async function inspect() {
               : { level: "synopsis" }
             : undefined))
         : undefined,
-      writingScope: polish.value
-        ? store.selection?.text.trim()
-          ? "selection"
-          : store.writingScope
-        : undefined,
+      writingScope: store.currentTaskRequest().writingScope,
       outputMode: polish.value ? store.outputMode : undefined,
       usePlanDraft: store.usePlanDraft,
       referenceNovelPlan: store.referenceNovelPlan,
@@ -260,15 +298,22 @@ async function applyMemoryDraft() {
   )
     return;
   applyingMemory.value = true;
+  const turnId = store.selectedTurnId,
+    chapterId = store.outputChapterId,
+    revisionId = store.memoryRevisionId;
+  const records = JSON.parse(JSON.stringify(store.memoryRecords));
   await store.safe(async () => {
     await store.flush();
     await store.api("memory:apply-generated", {
-      chapterId: store.outputChapterId,
-      revisionId: store.memoryRevisionId,
-      records: store.memoryRecords,
+      chapterId,
+      revisionId,
+      records,
+      turnId: turnId || undefined,
     });
     await store.refreshProject();
-    store.memoryRecords = null;
+    if (turnId !== store.selectedTurnId) return;
+    if (!store.selectedTurn) store.memoryRecords = null;
+    if (store.selectedTurn) store.selectedTurn.applied.push("已写入故事记忆");
     store.scratch();
     await store.flush();
     store.notify("已将审核后的记忆写入故事。");
@@ -313,6 +358,7 @@ async function applyMemoryDraft() {
       </header>
 
       <div class="workbench-scroll">
+        <ConversationHistory />
         <div class="workbench-role-row">
           <strong>{{ roleName }}</strong>
           <RouterLink :to="{ path: '/roles', query: { role: selectedTool } }"
@@ -459,7 +505,11 @@ async function applyMemoryDraft() {
                 </div>
               </dl>
             </details>
-            <label class="field-label">本次要求</label>
+            <label class="field-label">{{
+              store.selectedTurn
+                ? `继续修改版本 ${store.selectedTurn.number}`
+                : "本次要求"
+            }}</label>
             <NInput
               v-model:value="instruction"
               type="textarea"
@@ -489,25 +539,30 @@ async function applyMemoryDraft() {
                 v-if="!store.busy"
                 type="primary"
                 block
+                :disabled="
+                  store.conversationLoading || !!store.conversationInvalidReason
+                "
                 @click="store.safe(runTool)"
               >
                 <template #icon><Play :size="15" /></template
                 >{{
-                  selectedTool === "opening"
-                    ? novelMode
-                      ? hasChapterPlan
-                        ? "按章纲开篇"
-                        : "开始本章"
-                      : "直接开始故事"
-                    : selectedTool === "chapter"
+                  store.selectedTurn
+                    ? `基于版本 ${store.selectedTurn.number} 生成新版`
+                    : selectedTool === "opening"
                       ? novelMode
                         ? hasChapterPlan
-                          ? "按章纲续写"
-                          : "继续本章"
-                        : "接着写"
-                      : selectedTool === "develop"
-                        ? "生成分区建议"
-                        : "生成草稿"
+                          ? "按章纲开篇"
+                          : "开始本章"
+                        : "直接开始故事"
+                      : selectedTool === "chapter"
+                        ? novelMode
+                          ? hasChapterPlan
+                            ? "按章纲续写"
+                            : "继续本章"
+                          : "接着写"
+                        : selectedTool === "develop"
+                          ? "生成分区建议"
+                          : "生成草稿"
                 }}
               </NButton>
               <NButton v-else block @click="store.safe(store.stopTask)">
@@ -529,7 +584,7 @@ async function applyMemoryDraft() {
           <p>{{ store.taskError }}</p>
         </div>
         <section
-          v-if="store.output || store.busy"
+          v-if="store.output || store.busy || store.selectedTurn"
           class="workbench-latest-output"
         >
           <div class="workbench-section-heading">
@@ -539,12 +594,19 @@ async function applyMemoryDraft() {
                 class="spin"
                 :size="14"
               /><CheckCircle2 v-else :size="14" />{{
-                store.busy ? "正在生成" : "生成结果"
+                store.busy
+                  ? "正在生成"
+                  : store.selectedTurn
+                    ? `版本 ${store.selectedTurn.number} · 审核稿`
+                    : "生成结果"
               }}
             </h3>
           </div>
           <NInput
-            v-if="store.outputKind !== 'develop' && !store.planningDraft"
+            v-if="
+              (store.outputKind !== 'develop' && !store.planningDraft) ||
+              (store.selectedTurn && store.selectedTurn.status !== 'complete')
+            "
             :value="store.output"
             type="textarea"
             :autosize="{ minRows: 8, maxRows: 24 }"
@@ -575,32 +637,61 @@ async function applyMemoryDraft() {
                   }
                 "
                 ><template #trigger
-                  ><NButton size="small" :disabled="store.busy"
+                  ><NButton
+                    size="small"
+                    :disabled="
+                      store.busy ||
+                      store.planningDraft?.appliedIds?.includes(item.id)
+                    "
                     >移除此项候选</NButton
                   ></template
                 >移除未采用的「{{ item.title }}」？已确认规划保留。</NPopconfirm
               >
               <NCheckbox
-                :checked="selectedPlans.includes(item.id)"
+                :checked="
+                  selectedPlans.includes(item.id) ||
+                  store.planningDraft.appliedIds?.includes(item.id)
+                "
+                :disabled="
+                  store.busy ||
+                  store.planningDraft.appliedIds?.includes(item.id)
+                "
                 @update:checked="
                   (checked) =>
                     (selectedPlans = checked
                       ? [...selectedPlans, item.id]
                       : selectedPlans.filter((id) => id !== item.id))
                 "
-                >采用此项</NCheckbox
+                >{{
+                  store.planningDraft.appliedIds?.includes(item.id)
+                    ? "已采用"
+                    : "采用此项"
+                }}</NCheckbox
               ><NInput
                 v-model:value="item.title"
+                :disabled="
+                  store.busy ||
+                  store.planningDraft.appliedIds?.includes(item.id)
+                "
                 @update:value="store.scratch"
               /><NInput
                 v-model:value="item.content"
+                :disabled="
+                  store.busy ||
+                  store.planningDraft.appliedIds?.includes(item.id)
+                "
                 type="textarea"
                 :autosize="{ minRows: 4, maxRows: 14 }"
                 @update:value="store.scratch"
               />
             </article>
             <NButton
-              :disabled="!selectedPlans.length || store.busy"
+              :disabled="
+                !selectedPlans.length ||
+                store.busy ||
+                !!store.conversationInvalidReason ||
+                !!store.selectedTurn?.invalidReason
+              "
               type="primary"
               @click="store.safe(applyPlanning)"
               >采用所选规划</NButton
@@ -613,7 +704,7 @@ async function applyMemoryDraft() {
             <p>{{ store.developmentDraft.summary }}</p>
             <p class="field-help">
               {{ store.developmentDraft.changes.length }}
-              个分区建议，可分别编辑、采用；已保存到蓝图候选。
+              个分区建议，可分别编辑、采用。
             </p>
           </div>
           <div v-else class="development-output-summary">
@@ -626,7 +717,14 @@ async function applyMemoryDraft() {
             </p>
           </div>
           <div
-            v-if="!store.busy && store.output && !store.taskError"
+            v-if="
+              !store.busy &&
+              store.output &&
+              !store.taskError &&
+              !store.conversationInvalidReason &&
+              !store.selectedTurn?.invalidReason &&
+              (!store.selectedTurn || store.selectedTurn.status === 'complete')
+            "
             class="workbench-actions"
           >
             <template
@@ -692,7 +790,14 @@ async function applyMemoryDraft() {
             >
           </div>
           <div
-            v-if="!store.busy && store.output && !store.taskError"
+            v-if="
+              !store.busy &&
+              store.output &&
+              !store.taskError &&
+              !store.conversationInvalidReason &&
+              !store.selectedTurn?.invalidReason &&
+              (!store.selectedTurn || store.selectedTurn.status === 'complete')
+            "
             class="workbench-actions"
           >
             <NButton
@@ -732,7 +837,13 @@ async function applyMemoryDraft() {
             这份结果也已保存到故事蓝图的「创作候选」，可以先在蓝图页审核。
           </p>
           <div
-            v-if="store.outputKind === 'notes' && store.memoryRecords?.length"
+            v-if="
+              store.outputKind === 'notes' &&
+              store.memoryRecords?.length &&
+              !store.conversationInvalidReason &&
+              !store.selectedTurn?.invalidReason &&
+              (!store.selectedTurn || store.selectedTurn.status === 'complete')
+            "
             class="memory-draft"
           >
             <div class="memory-meta">
@@ -749,6 +860,10 @@ async function applyMemoryDraft() {
             >
               <NSelect
                 v-model:value="record.kind"
+                :disabled="
+                  store.busy ||
+                  store.selectedTurn?.applied.includes('已写入故事记忆')
+                "
                 :options="
                   Object.entries(memoryLabels).map(([value, label]) => ({
                     value,
@@ -759,6 +874,10 @@ async function applyMemoryDraft() {
               />
               <NInput
                 v-model:value="record.content"
+                :disabled="
+                  store.busy ||
+                  store.selectedTurn?.applied.includes('已写入故事记忆')
+                "
                 type="textarea"
                 :autosize="{ minRows: 1, maxRows: 5 }"
                 @update:value="store.scratch"
@@ -775,7 +894,12 @@ async function applyMemoryDraft() {
                   }
                 "
                 ><template #trigger
-                  ><NButton size="small" :disabled="store.busy"
+                  ><NButton
+                    size="small"
+                    :disabled="
+                      store.busy ||
+                      store.selectedTurn?.applied.includes('已写入故事记忆')
+                    "
                     >移除</NButton
                   ></template
                 >移除此条待审核记忆？正式记忆保留。</NPopconfirm
@@ -785,8 +909,13 @@ async function applyMemoryDraft() {
               size="small"
               type="primary"
               :loading="applyingMemory"
+              :disabled="store.selectedTurn?.applied.includes('已写入故事记忆')"
               @click="applyMemoryDraft"
-              >确认写入故事记忆</NButton
+              >{{
+                store.selectedTurn?.applied.includes("已写入故事记忆")
+                  ? "此版本记忆已写入"
+                  : "确认写入故事记忆"
+              }}</NButton
             >
           </div>
         </section>
@@ -826,6 +955,23 @@ async function applyMemoryDraft() {
           </div>
           <h3>完整参考上下文</h3>
           <pre class="effective-prompt">{{ preview.context }}</pre>
+          <template v-if="preview.messages && preview.messages.length > 2">
+            <h3>本次实际对话消息</h3>
+            <p v-if="preview.omittedTurns" class="field-help">
+              较早的
+              {{ preview.omittedTurns }}
+              轮问答未装入；首轮要求与所选完整稿已保留。
+            </p>
+            <article
+              v-for="(message, index) in preview.messages.slice(2)"
+              :key="index"
+            >
+              <strong>{{
+                message.role === "assistant" ? "AI 候选" : "作者要求"
+              }}</strong>
+              <pre class="effective-prompt">{{ message.content }}</pre>
+            </article>
+          </template>
         </template>
       </NDrawerContent>
     </NDrawer>

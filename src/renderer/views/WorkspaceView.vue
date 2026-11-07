@@ -250,7 +250,10 @@ async function deleteCandidate(id: string) {
       (c) => c.id !== id,
     ),
   });
-  if (candidate?.development?.id === store.developmentDraft?.id) {
+  if (
+    candidate?.development?.id === store.developmentDraft?.id &&
+    !candidate?.turnId
+  ) {
     store.developmentDraft = null;
     store.reviewingDevelopment = false;
     store.output = "";
@@ -284,27 +287,24 @@ const importCards = computed(() =>
       (importKind.value === "all" || card.kind === importKind.value),
   ),
 );
-const tabs = computed(() => [
-  ...(store.detail?.project.mode === "novel"
-    ? [
-        { key: "overview", label: "作品概览", icon: BookOpen },
-        { key: "planning", label: "总纲与章节规划", icon: Map },
-      ]
-    : []),
-  { key: "text", label: "章节正文", icon: FileText },
-  {
-    key: "outline",
-    label:
-      store.detail?.project.mode === "novel"
-        ? "创作笔记与模式"
-        : "故事蓝图与模式",
-    icon: Map,
-  },
-  { key: "fragments", label: "探索片段", icon: Feather },
-  { key: "cards", label: "世界与人物", icon: Users },
-  { key: "memory", label: "故事记忆", icon: NotebookPen },
-  { key: "images", label: "故事插画", icon: Images },
-]);
+const tabs = computed(() => {
+  const blueprintTab = { key: "outline", label: "故事蓝图", icon: Map };
+  const textTab = { key: "text", label: "章节正文", icon: FileText };
+  return [
+    ...(store.detail?.project.mode === "novel"
+      ? [
+          { key: "overview", label: "作品概览", icon: BookOpen },
+          blueprintTab,
+          { key: "planning", label: "总纲与章节规划", icon: Map },
+          textTab,
+        ]
+      : [textTab, blueprintTab]),
+    { key: "fragments", label: "探索片段", icon: Feather },
+    { key: "cards", label: "世界与人物", icon: Users },
+    { key: "memory", label: "故事记忆", icon: NotebookPen },
+    { key: "images", label: "故事插画", icon: Images },
+  ];
+});
 const filteredMemories = computed(
   () =>
     store.detail?.memories.filter((m) => showRetired.value || m.active) || [],
@@ -448,7 +448,7 @@ async function addMemory() {
     store.notify("记忆记录已保存，原有来源与有效性规则保留。");
   });
 }
-function applyCandidate(
+async function applyCandidate(
   id: string,
   sectionId: string,
   replace = false,
@@ -461,6 +461,11 @@ function applyCandidate(
   );
   if (!candidate || !section) return;
   if (replace && section.content.trim() && !confirmed) return;
+  if (candidate.turnId)
+    await store.api("conversation:check-application", {
+      projectId: project.id,
+      id: candidate.turnId,
+    });
   store.editProject({
     blueprintSections: applyBlueprintContent(
       project.blueprintSections,
@@ -469,16 +474,22 @@ function applyCandidate(
       replace ? "replace" : "append",
     ),
   });
+  await store.flush();
+  if (candidate.turnId)
+    await store.markVersionApplied(
+      candidate.turnId,
+      `已写入蓝图分区「${section.title}」`,
+    );
   store.notify(
     replace
       ? `已替换「${section.title}」分区。`
       : `已追加到「${section.title}」分区。`,
   );
 }
-function confirmCandidateReplacement() {
+async function confirmCandidateReplacement() {
   const preview = candidatePreview.value;
   if (!preview) return;
-  applyCandidate(preview.candidateId, preview.sectionId, true, true);
+  await applyCandidate(preview.candidateId, preview.sectionId, true, true);
   candidatePreview.value = null;
 }
 function moveBlueprintSection(index: number, direction: -1 | 1) {
@@ -517,13 +528,38 @@ async function apply(
   mode: "replace" | "append" | "outline" | "selection" | "prompt",
   confirmed = false,
 ) {
+  const content = store.output,
+    versionId = store.selectedTurnId;
+  const targetChapterId = store.outputChapterId,
+    source = store.sourceContent;
+  const sourceSelection = store.outputSelection
+    ? { ...store.outputSelection }
+    : null;
+  const outputScope = store.outputScope,
+    resultType = store.resultType;
+  if (
+    store.selectedTurn &&
+    (store.selectedTurn.status !== "complete" ||
+      store.conversationInvalidReason ||
+      store.selectedTurn.invalidReason)
+  ) {
+    store.notify(
+      store.conversationInvalidReason ||
+        store.selectedTurn.invalidReason ||
+        "请选择已完成的版本后采用。",
+      "info",
+    );
+    return;
+  }
   if (store.resultType === "analysis" || store.resultType === "planning") {
     store.notify("这份结果需要在对应的建议或规划区域处理。", "info");
     return;
   }
   if (mode === "prompt") {
-    imagePrompt.value = store.output;
+    imagePrompt.value = content;
     tab.value = "images";
+    if (versionId)
+      await store.markVersionApplied(versionId, "已送入插画提示词");
     return;
   }
   if (!store.output.trim()) return;
@@ -545,22 +581,24 @@ async function apply(
       outline: "",
       blueprintSections: section
         ? sections.map((item) =>
-            item.id === target.id ? { ...item, content: store.output } : item,
+            item.id === target.id ? { ...item, content } : item,
           )
-        : [...sections, { ...target, content: store.output }],
+        : [...sections, { ...target, content }],
     });
     tab.value = "outline";
+    await store.flush();
+    if (versionId) await store.markVersionApplied(versionId, "已写入故事蓝图");
     store.notify("创作结果已写入可编辑蓝图。");
     return;
   }
-  if (store.outputChapterId !== store.chapter?.id) {
+  if (!store.chapter || targetChapterId !== store.chapter.id) {
     store.notify("这份结果属于另一个章节，请切回对应章节后使用。", "info");
     return;
   }
   if (
-    store.resultType === "rewrite" &&
-    store.outputScope === "document" &&
-    store.chapter.content !== store.sourceContent
+    resultType === "rewrite" &&
+    outputScope === "document" &&
+    store.chapter.content !== source
   ) {
     store.notify(
       "原文已经变化，请重新生成改写稿，避免覆盖后来的编辑。",
@@ -576,19 +614,38 @@ async function apply(
   await nextTick();
   await store.safe(async () => {
     await store.flush();
+    if (!store.chapter || store.chapter.id !== targetChapterId)
+      throw new Error("目标章节已切换，请回到原章节后采用。");
     await store.api("chapter:checkpoint", {
       id: store.chapter!.id,
       label: "写入 AI 草稿前",
     });
+    if (!store.chapter || store.chapter.id !== targetChapterId)
+      throw new Error("目标章节已切换，请回到原章节后采用。");
+    if (
+      resultType === "rewrite" &&
+      outputScope === "document" &&
+      store.chapter.content !== source
+    )
+      throw new Error("原文已经变化，请重新生成改写稿。");
     if (mode === "selection") {
       if (
-        !store.outputSelection ||
-        !editor.value?.replaceSelected(store.outputSelection, store.output)
+        !sourceSelection ||
+        !editor.value?.replaceSelected(sourceSelection, content)
       )
         throw new Error("选中文段已经发生变化，请重新选择并改写。");
-    } else if (mode === "replace") editor.value?.replace(store.output);
-    else editor.value?.append(store.output);
+    } else if (mode === "replace") editor.value?.replace(content);
+    else editor.value?.append(content);
     await store.flush();
+    if (versionId)
+      await store.markVersionApplied(
+        versionId,
+        mode === "append"
+          ? "已追加到章节草稿"
+          : mode === "selection"
+            ? "已替换选中文段"
+            : "已替换章节草稿",
+      );
     store.notify("已写入章节草稿。满意后可采用并整理记忆。");
   });
 }

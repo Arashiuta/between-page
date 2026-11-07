@@ -199,6 +199,7 @@ function setupStore() {
   const fixture = setup();
   const { repo, project, first } = fixture;
   const invoke = vi.fn(async (action: string, payload: unknown) => {
+    if (action === "conversation:list") return [];
     if (action === "project:get") return repo.getDetail(payload as string);
     if (action === "scratch:get")
       return repo.getSetting(`scratch.${payload as string}`, null);

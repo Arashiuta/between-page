@@ -106,11 +106,27 @@ export class StoryRepository {
       CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), chapter_id TEXT REFERENCES chapters(id), revision_id TEXT REFERENCES revisions(id), active INTEGER NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id), payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS creation_conversations (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS creation_turns (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES creation_conversations(id), project_id TEXT NOT NULL REFERENCES projects(id), payload TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_creation_conversations_project ON creation_conversations(project_id);
+      CREATE INDEX IF NOT EXISTS idx_creation_turns_conversation ON creation_turns(conversation_id);
       CREATE INDEX IF NOT EXISTS idx_chapters_project ON chapters(project_id, position);
       CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id, active);
       CREATE INDEX IF NOT EXISTS idx_revisions_chapter ON revisions(chapter_id);
       PRAGMA user_version = 1;
     `);
+    for (const row of this.db
+      .prepare("SELECT id, payload FROM creation_turns")
+      .all() as { id: string; payload: string }[]) {
+      const turn = JSON.parse(row.payload);
+      if (turn.status === "generating") {
+        turn.status = "interrupted";
+        turn.error = "上次生成因程序关闭而中断，已收到的内容已保留。";
+        this.db
+          .prepare("UPDATE creation_turns SET payload = ? WHERE id = ?")
+          .run(JSON.stringify(turn), row.id);
+      }
+    }
     const projects = this.db
       .prepare("SELECT id, payload FROM projects")
       .all() as { id: string; payload: string }[];
@@ -313,10 +329,19 @@ export class StoryRepository {
       this.db.prepare("DELETE FROM revisions WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM chapters WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM cards WHERE project_id = ?").run(id);
+      this.db
+        .prepare("DELETE FROM creation_turns WHERE project_id = ?")
+        .run(id);
+      this.db
+        .prepare("DELETE FROM creation_conversations WHERE project_id = ?")
+        .run(id);
       this.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
       this.db
         .prepare("DELETE FROM settings WHERE key = ?")
         .run("scratch." + id);
+      this.db
+        .prepare("DELETE FROM settings WHERE key = ?")
+        .run("creation.imported." + id);
       this.db
         .prepare("DELETE FROM settings WHERE key = ?")
         .run("planning.history." + id);
@@ -567,6 +592,18 @@ export class StoryRepository {
         );
     for (const image of this.listImages())
       if (image.revisionId === id) usage.push(`插画来源：${image.name}`);
+    for (const row of this.db
+      .prepare("SELECT payload FROM creation_turns WHERE project_id = ?")
+      .all(projectId) as { payload: string }[])
+      if (references(JSON.parse(row.payload), id))
+        usage.push("AI 创作对话版本");
+    for (const row of this.db
+      .prepare(
+        "SELECT payload FROM creation_conversations WHERE project_id = ?",
+      )
+      .all(projectId) as { payload: string }[])
+      if (references(JSON.parse(row.payload), id))
+        usage.push("AI 创作对话来源");
     for (const p of this.listProjects())
       for (const candidate of p.blueprintCandidates)
         if (references(candidate.development, id))

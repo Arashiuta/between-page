@@ -46,6 +46,7 @@ export interface PlanningDraft {
   target: PlanningTarget;
   base: string;
   items: { id: string; title: string; content: string }[];
+  appliedIds?: string[];
 }
 export interface PlanningVersion {
   id: string;
@@ -91,6 +92,8 @@ export interface BlueprintCandidate {
   source: TaskKind;
   createdAt: string;
   development?: StoryDevelopmentDraft;
+  conversationId?: string;
+  turnId?: string;
 }
 export interface DevelopmentChange {
   id: string;
@@ -269,6 +272,8 @@ export interface TaskPreview {
   model: string;
   coverage: MaterialCoverage[];
   omitted: number;
+  messages?: { role: "system" | "user" | "assistant"; content: string }[];
+  omittedTurns?: number;
 }
 export interface Memory {
   id: string;
@@ -385,6 +390,9 @@ export interface TaskRequest {
   outputMode?: "rewrite" | "analysis";
   usePlanDraft?: boolean;
   referenceNovelPlan?: boolean;
+  conversationId?: string;
+  parentTurnId?: string;
+  selectionRange?: { text: string; from: number; to: number };
 }
 export interface TaskResult {
   text: string;
@@ -394,6 +402,8 @@ export interface TaskResult {
   developmentDraft?: StoryDevelopmentDraft;
   planningDraft?: PlanningDraft;
   resultType?: "prose" | "rewrite" | "analysis" | "planning";
+  conversationId?: string;
+  turnId?: string;
 }
 export interface ImageRequest {
   projectId: string;
@@ -406,6 +416,8 @@ export interface ImageRequest {
 export interface ProgressEvent {
   requestId: string;
   delta: string;
+  conversationId?: string;
+  turnId?: string;
 }
 export interface DesktopAPI {
   invoke<T = unknown>(action: string, payload?: unknown): Promise<T>;

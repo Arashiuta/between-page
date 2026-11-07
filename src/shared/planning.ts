@@ -1,4 +1,24 @@
 import type { Chapter, NovelPlan, PlanBlock, Project } from "./types";
+import { z } from "zod";
+
+export const planningTargetSchema = z.object({
+  level: z.enum(["synopsis", "volume", "chapter", "scene"]),
+  id: z.string().uuid().optional(),
+  parentId: z.string().uuid().optional(),
+  count: z.number().int().min(1).max(30).optional(),
+});
+export const planningItemSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().trim().min(1).max(500),
+  content: z.string().trim().min(1).max(200_000),
+});
+export const planningDraftSchema = z.object({
+  projectId: z.string().uuid(),
+  target: planningTargetSchema,
+  base: z.string().length(64),
+  items: z.array(planningItemSchema).min(1).max(30),
+  appliedIds: z.array(z.string().uuid()).max(30).optional(),
+});
 
 export const emptyNovelPlan = (): NovelPlan => ({
   synopsis: { content: "" },

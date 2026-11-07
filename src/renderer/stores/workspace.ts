@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, nextTick } from "vue";
 import type {
   Bootstrap,
   ProjectDetail,
@@ -34,6 +34,14 @@ import { developmentText } from "../../shared/development";
 import { normalizeSoftware } from "../../shared/appearance";
 import { normalizeProject } from "../../shared/blueprint";
 import { normalizeChapterVolume } from "../../shared/planning";
+import {
+  conversationTarget,
+  targetKey,
+  type CreationConversation,
+  type CreationTurn,
+  type ConversationDetail,
+  type TurnReview,
+} from "../../shared/conversations";
 
 export const useWorkspace = defineStore("workspace", () => {
   const ready = ref(false),
@@ -71,6 +79,20 @@ export const useWorkspace = defineStore("workspace", () => {
     closingWindow = ref(false);
   const reviewingDevelopment = ref(false);
   const developmentUndoId = ref("");
+  const conversations = ref<CreationConversation[]>([]);
+  const conversationId = ref("");
+  const turns = ref<CreationTurn[]>([]);
+  const selectedTurnId = ref("");
+  const conversationInvalidReason = ref("");
+  const conversationsLoaded = ref(false);
+  const conversationLoading = ref(false);
+  const activeConversation = computed(() =>
+    conversations.value.find((c) => c.id === conversationId.value),
+  );
+  const selectedTurn = computed(() =>
+    turns.value.find((t) => t.id === selectedTurnId.value),
+  );
+  let conversationRevision = 0;
   const selection = ref<{ text: string; from: number; to: number } | null>(
       null,
     ),
@@ -343,6 +365,43 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   function scratch() {
     if (!detail.value) return;
+    if (activeConversation.value && !busy.value) {
+      if (
+        targetKey(activeConversation.value.target) ===
+        targetKey(conversationTarget(currentTaskRequest()))
+      )
+        activeConversation.value.draftInstruction = instruction.value;
+      activeConversation.value.updatedAt = new Date().toISOString();
+      conversations.value.sort((a, b) =>
+        b.updatedAt.localeCompare(a.updatedAt),
+      );
+      enqueue("conversation:" + conversationId.value, "conversation:update", {
+        projectId: detail.value.project.id,
+        id: conversationId.value,
+        selectedTurnId: selectedTurnId.value || null,
+        draftInstruction: activeConversation.value.draftInstruction,
+      });
+      if (selectedTurn.value && !busy.value) {
+        const review: TurnReview = {
+          text: output.value,
+          ...(selectedTurn.value.review.resultType
+            ? { resultType: selectedTurn.value.review.resultType }
+            : {}),
+          ...(memoryRevisionId.value
+            ? { memoryRevisionId: memoryRevisionId.value }
+            : {}),
+          memoryRecords: memoryRecords.value,
+          developmentDraft: developmentDraft.value,
+          planningDraft: planningDraft.value,
+        };
+        selectedTurn.value.review = JSON.parse(JSON.stringify(review));
+        enqueue("turn:" + selectedTurnId.value, "conversation:save-turn", {
+          projectId: detail.value.project.id,
+          id: selectedTurnId.value,
+          review,
+        });
+      }
+    }
     enqueue("scratch:" + detail.value.project.id, "scratch:save", {
       projectId: detail.value.project.id,
       kind: outputKind.value,
@@ -361,6 +420,8 @@ export const useWorkspace = defineStore("workspace", () => {
       usePlanDraft: usePlanDraft.value,
       referenceNovelPlan: referenceNovelPlan.value,
       selectedTool: taskKind.value,
+      ...(conversationId.value ? { conversationId: conversationId.value } : {}),
+      ...(selectedTurnId.value ? { selectedTurnId: selectedTurnId.value } : {}),
       developmentUndoId: developmentUndoId.value,
       ...(memoryRevisionId.value
         ? { memoryRevisionId: memoryRevisionId.value }
@@ -368,8 +429,251 @@ export const useWorkspace = defineStore("workspace", () => {
       outputSelection: outputSelection.value,
     });
   }
+  function clearResult() {
+    output.value = "";
+    memoryRecords.value = null;
+    memoryRevisionId.value = "";
+    developmentDraft.value = null;
+    planningDraft.value = null;
+    resultType.value = null;
+    sourceContent.value = "";
+    outputSelection.value = null;
+    outputScope.value = null;
+    outputChapterId.value = "";
+    taskError.value = "";
+  }
+  function hydrateTurn(turn?: CreationTurn) {
+    clearResult();
+    selectedTurnId.value = turn?.id ?? "";
+    if (!turn) return;
+    const review = JSON.parse(JSON.stringify(turn.review)) as TurnReview;
+    output.value = review.text;
+    outputKind.value = activeConversation.value?.target.kind ?? taskKind.value;
+    outputChapterId.value = activeConversation.value?.target.chapterId ?? "";
+    resultType.value = review.resultType ?? null;
+    memoryRecords.value = review.memoryRecords ?? null;
+    memoryRevisionId.value = review.memoryRevisionId ?? "";
+    developmentDraft.value = review.developmentDraft ?? null;
+    planningDraft.value = review.planningDraft ?? null;
+    sourceContent.value = turn.sourceContent;
+    outputSelection.value = turn.selection ?? null;
+    outputScope.value = activeConversation.value?.target.writingScope ?? null;
+    developmentUndoId.value = turn.undoId ?? "";
+    taskError.value = turn.error;
+  }
+  async function loadConversations(projectId: string) {
+    const list = await api<CreationConversation[]>(
+      "conversation:list",
+      projectId,
+    );
+    if (detail.value?.project.id !== projectId) return;
+    conversations.value = Array.isArray(list) ? list : [];
+    conversationsLoaded.value = Array.isArray(list);
+  }
+  async function openConversation(id: string, adjustTarget = true) {
+    if (!detail.value || busy.value) return;
+    const projectId = detail.value.project.id;
+    const revision = ++conversationRevision;
+    scratch();
+    await flush();
+    conversationLoading.value = true;
+    try {
+      const value = await api<ConversationDetail>("conversation:get", {
+        projectId,
+        id,
+      });
+      if (
+        revision !== conversationRevision ||
+        detail.value?.project.id !== projectId
+      )
+        return;
+      conversations.value = conversations.value.map((c) =>
+        c.id === id ? value.conversation : c,
+      );
+      conversationId.value = id;
+      turns.value = value.turns;
+      conversationInvalidReason.value = value.invalidReason ?? "";
+      const target = value.conversation.target;
+      if (adjustTarget) {
+        taskKind.value = target.kind;
+        if (
+          target.chapterId &&
+          [...detail.value.chapters, ...(detail.value.fragments ?? [])].some(
+            (c) => c.id === target.chapterId,
+          )
+        )
+          chapterId.value = target.chapterId;
+        planningTarget.value = target.planningTarget;
+        writingScope.value = target.writingScope ?? "selection";
+        outputMode.value = target.outputMode ?? "rewrite";
+        selection.value = null;
+      }
+      instruction.value = value.conversation.draftInstruction;
+      hydrateTurn(
+        value.turns.find((t) => t.id === value.conversation.selectedTurnId) ??
+          value.turns.at(-1),
+      );
+      await nextTick();
+    } finally {
+      if (revision === conversationRevision) conversationLoading.value = false;
+    }
+  }
+  function currentTaskRequest(kind: TaskKind = taskKind.value): TaskRequest {
+    const polish = ["revise", "scene", "dialogue"].includes(kind);
+    const target = activeConversation.value?.target;
+    const matching =
+      target?.kind === kind &&
+      target.chapterId === (chapter.value?.id || undefined);
+    const range =
+      selection.value ??
+      (matching && (!polish || writingScope.value === "selection")
+        ? target?.selectionRange
+        : undefined);
+    return {
+      requestId: crypto.randomUUID(),
+      kind,
+      projectId: detail.value!.project.id,
+      chapterId: chapter.value?.id,
+      instruction: instruction.value,
+      selection: range?.text,
+      selectionRange: range ?? undefined,
+      planningTarget: ["outline", "adjust"].includes(kind)
+        ? (planningTarget.value ??
+          (detail.value!.project.mode === "novel"
+            ? chapter.value && chapter.value.kind !== "fragment"
+              ? { level: "chapter", id: chapter.value.id }
+              : { level: "synopsis" }
+            : undefined))
+        : undefined,
+      writingScope: polish
+        ? range?.text.trim()
+          ? "selection"
+          : writingScope.value
+        : undefined,
+      outputMode: polish ? outputMode.value : undefined,
+      usePlanDraft: usePlanDraft.value,
+      referenceNovelPlan: referenceNovelPlan.value,
+    };
+  }
+  async function restoreConversation() {
+    if (
+      !conversationsLoaded.value ||
+      busy.value ||
+      conversationLoading.value ||
+      !detail.value
+    )
+      return;
+    const target = conversationTarget(currentTaskRequest());
+    if (
+      activeConversation.value &&
+      targetKey(activeConversation.value.target) === targetKey(target)
+    )
+      return;
+    const c = conversations.value.find(
+      (c) => targetKey(c.target) === targetKey(target),
+    );
+    if (c) await openConversation(c.id, false);
+    else {
+      scratch();
+      await flush();
+      conversationId.value = "";
+      selectedTurnId.value = "";
+      turns.value = [];
+      conversationInvalidReason.value = "";
+      clearResult();
+      instruction.value = "";
+    }
+  }
+  async function newConversation() {
+    if (!detail.value || busy.value) return;
+    scratch();
+    await flush();
+    const c = await api<CreationConversation>("conversation:create", {
+      projectId: detail.value.project.id,
+      target: conversationTarget(currentTaskRequest()),
+    });
+    conversations.value.unshift(c);
+    conversationId.value = c.id;
+    selectedTurnId.value = "";
+    turns.value = [];
+    conversationInvalidReason.value = "";
+    clearResult();
+    instruction.value = "";
+    conversationsLoaded.value = true;
+  }
+  async function selectVersion(id: string) {
+    if (busy.value) return;
+    const projectId = detail.value?.project.id,
+      currentConversationId = conversationId.value;
+    scratch();
+    await flush();
+    if (!projectId || !currentConversationId) return;
+    const latest = await api<ConversationDetail>("conversation:get", {
+      projectId,
+      id: currentConversationId,
+    });
+    if (
+      detail.value?.project.id !== projectId ||
+      conversationId.value !== currentConversationId
+    )
+      return;
+    turns.value = latest.turns;
+    conversationInvalidReason.value = latest.invalidReason ?? "";
+    const turn = latest.turns.find((t) => t.id === id);
+    if (turn) {
+      hydrateTurn(turn);
+      scratch();
+    }
+  }
+  async function renameConversation(title: string) {
+    if (!detail.value || !conversationId.value) return;
+    const c = await api<CreationConversation>("conversation:update", {
+      projectId: detail.value.project.id,
+      id: conversationId.value,
+      title,
+    });
+    conversations.value = conversations.value.map((item) =>
+      item.id === c.id ? c : item,
+    );
+  }
+  async function deleteConversation() {
+    if (!detail.value || busy.value || !conversationId.value) return;
+    await flush();
+    const id = conversationId.value;
+    await api("conversation:delete", {
+      projectId: detail.value.project.id,
+      id,
+    });
+    conversations.value = conversations.value.filter((c) => c.id !== id);
+    conversationId.value = "";
+    selectedTurnId.value = "";
+    turns.value = [];
+    clearResult();
+    await refreshProject();
+    await restoreConversation();
+    scratch();
+  }
+  async function markResultApplied(label: string) {
+    if (!selectedTurn.value || !detail.value) return;
+    await markVersionApplied(selectedTurn.value.id, label);
+  }
+  async function markVersionApplied(id: string, label: string) {
+    if (!detail.value) return;
+    const turn = await api<CreationTurn>("conversation:applied", {
+      projectId: detail.value.project.id,
+      id,
+      label,
+    });
+    turns.value = turns.value.map((t) => (t.id === turn.id ? turn : t));
+  }
   async function openProject(id: string) {
     await flush();
+    conversationRevision++;
+    conversationId.value = "";
+    selectedTurnId.value = "";
+    turns.value = [];
+    conversations.value = [];
+    conversationsLoaded.value = false;
     detail.value = await api<ProjectDetail>("project:get", id);
     chapterId.value = detail.value.chapters[0]?.id || "";
     selection.value = null;
@@ -393,6 +697,8 @@ export const useWorkspace = defineStore("workspace", () => {
       selectedTool?: TaskKind;
       developmentUndoId?: string;
       outputSelection?: { text: string; from: number; to: number } | null;
+      conversationId?: string;
+      selectedTurnId?: string;
     } | null>("scratch:get", id);
     output.value = saved?.output || "";
     instruction.value = saved?.instruction || "";
@@ -419,6 +725,14 @@ export const useWorkspace = defineStore("workspace", () => {
     developmentUndoId.value = saved?.developmentUndoId ?? "";
     outputSelection.value = saved?.outputSelection ?? null;
     taskError.value = "";
+    await loadConversations(id);
+    if (conversationsLoaded.value) {
+      const remembered =
+        conversations.value.find((c) => c.id === saved?.conversationId) ??
+        conversations.value.find((c) => c.legacy);
+      if (remembered) await openConversation(remembered.id);
+      else await restoreConversation();
+    }
   }
   async function refreshProject() {
     if (!detail.value) return;
@@ -477,6 +791,16 @@ export const useWorkspace = defineStore("workspace", () => {
     });
     if (detail.value?.project.id !== target.projectId) return;
     detail.value = updated;
+    if (
+      activeConversation.value?.target.chapterId === id ||
+      activeConversation.value?.target.planningTarget?.id === id ||
+      activeConversation.value?.target.planningTarget?.parentId === id
+    ) {
+      conversationId.value = "";
+      selectedTurnId.value = "";
+      turns.value = [];
+      clearResult();
+    }
     pending.delete("chapter:" + id);
     if (
       ![...updated.chapters, ...(updated.fragments ?? [])].some(
@@ -548,6 +872,12 @@ export const useWorkspace = defineStore("workspace", () => {
       ["volume", "scene"].includes(target.level) &&
       ((value.level === target.level && value.id === target.id) ||
         (target.level === "volume" && value.parentId === target.id));
+    if (removedTarget(activeConversation.value?.target.planningTarget)) {
+      conversationId.value = "";
+      selectedTurnId.value = "";
+      turns.value = [];
+      clearResult();
+    }
     if (removedTarget(planningTarget.value)) planningTarget.value = undefined;
     if (removedTarget(planningDraft.value?.target)) {
       planningDraft.value = null;
@@ -576,6 +906,7 @@ export const useWorkspace = defineStore("workspace", () => {
       writingScope?: TaskRequest["writingScope"];
       outputMode?: TaskRequest["outputMode"];
       usePlanDraft?: boolean;
+      newConversation?: boolean;
     } = {},
   ) {
     if (!detail.value || busy.value || closingWindow.value) return;
@@ -598,6 +929,49 @@ export const useWorkspace = defineStore("workspace", () => {
       await flush();
       if (stopRequested || detail.value?.project.id !== projectId) return;
       if (options.planningTarget) planningTarget.value = options.planningTarget;
+      const request = currentTaskRequest(kind);
+      request.requestId = requestId.value;
+      request.instruction = options.instruction ?? instruction.value;
+      request.workflowContext = options.workflowContext;
+      request.chapterId = options.chapterId || request.chapterId;
+      request.outputMode = options.outputMode ?? request.outputMode;
+      request.usePlanDraft = options.usePlanDraft ?? request.usePlanDraft;
+      if (options.planningTarget)
+        request.planningTarget = options.planningTarget;
+      if (options.writingScope && !request.selection)
+        request.writingScope = options.writingScope;
+      if (request.writingScope) writingScope.value = request.writingScope;
+      if (conversationsLoaded.value) {
+        const target = conversationTarget(request);
+        let c =
+          !options.newConversation && !options.workflowContext
+            ? activeConversation.value &&
+              targetKey(activeConversation.value.target) === targetKey(target)
+              ? activeConversation.value
+              : conversations.value.find(
+                  (c) => targetKey(c.target) === targetKey(target),
+                )
+            : undefined;
+        if (!c) {
+          c = await api<CreationConversation>("conversation:create", {
+            projectId,
+            target,
+          });
+          conversations.value.unshift(c);
+        }
+        if (stopRequested || detail.value?.project.id !== projectId) return;
+        request.conversationId = c.id;
+        request.parentTurnId =
+          c.id === conversationId.value
+            ? selectedTurnId.value || undefined
+            : c.selectedTurnId || undefined;
+        if (c.id !== conversationId.value) {
+          turns.value = [];
+          selectedTurnId.value = "";
+        }
+        conversationId.value = c.id;
+        conversationLoading.value = true;
+      }
       output.value = "";
       memoryRecords.value = null;
       memoryRevisionId.value = "";
@@ -606,48 +980,24 @@ export const useWorkspace = defineStore("workspace", () => {
       resultType.value = null;
       outputKind.value = kind;
       taskKind.value = kind;
-      const targetChapterId = options.chapterId || chapter.value?.id || "";
+      const targetChapterId = request.chapterId || "";
       outputChapterId.value = targetChapterId;
-      outputSelection.value =
-        targetChapterId === chapter.value?.id && selection.value
-          ? { ...selection.value }
-          : null;
+      outputSelection.value = request.selectionRange
+        ? { ...request.selectionRange }
+        : null;
       const selected = outputSelection.value?.text;
       const polish = ["revise", "scene", "dialogue"].includes(kind);
       outputScope.value = polish
         ? selected?.trim()
           ? "selection"
-          : (options.writingScope ?? writingScope.value)
+          : (request.writingScope ?? writingScope.value)
         : null;
       sourceContent.value =
         [...detail.value.chapters, ...(detail.value.fragments ?? [])].find(
           (c) => c.id === targetChapterId,
         )?.content ?? "";
       scratch();
-      const result = await api<TaskResult>("ai:run", {
-        requestId: requestId.value,
-        kind,
-        projectId,
-        chapterId: targetChapterId || undefined,
-        instruction: options.instruction ?? instruction.value,
-        selection: selected,
-        workflowContext: options.workflowContext,
-        planningTarget: ["outline", "adjust"].includes(kind)
-          ? (options.planningTarget ??
-            planningTarget.value ??
-            (detail.value.project.mode === "novel"
-              ? chapter.value?.kind !== "fragment" && chapter.value
-                ? { level: "chapter", id: chapter.value.id }
-                : { level: "synopsis" }
-              : undefined))
-          : undefined,
-        writingScope: polish ? (outputScope.value ?? undefined) : undefined,
-        outputMode: polish
-          ? (options.outputMode ?? outputMode.value)
-          : undefined,
-        usePlanDraft: options.usePlanDraft ?? usePlanDraft.value,
-        referenceNovelPlan: referenceNovelPlan.value,
-      });
+      const result = await api<TaskResult>("ai:run", request);
       if (detail.value?.project.id !== projectId) return;
       requestId.value = "";
       output.value = result.text;
@@ -657,6 +1007,7 @@ export const useWorkspace = defineStore("workspace", () => {
       planningDraft.value = result.planningDraft ?? null;
       resultType.value = result.resultType ?? (polish ? "rewrite" : null);
       if (
+        !result.turnId &&
         !result.planningDraft &&
         toolInfo[kind].candidate &&
         result.text.trim()
@@ -693,12 +1044,48 @@ export const useWorkspace = defineStore("workspace", () => {
           error instanceof Error ? error.message : String(error);
     } finally {
       requestId.value = "";
-      busy.value = false;
       generationProjectId = "";
       if (detail.value?.project.id === projectId) {
+        if (conversationLoading.value && conversationId.value) {
+          try {
+            const failure = taskError.value;
+            const value = await api<ConversationDetail>("conversation:get", {
+              projectId,
+              id: conversationId.value,
+            });
+            if (detail.value?.project.id === projectId) {
+              conversations.value = conversations.value.map((c) =>
+                c.id === value.conversation.id ? value.conversation : c,
+              );
+              turns.value = value.turns;
+              hydrateTurn(
+                value.turns.find(
+                  (t) => t.id === value.conversation.selectedTurnId,
+                ) ?? value.turns.at(-1),
+              );
+              if (failure && !taskError.value) taskError.value = failure;
+              instruction.value = value.conversation.draftInstruction;
+              const refreshed = await api<ProjectDetail>(
+                "project:get",
+                projectId,
+              );
+              if (detail.value?.project.id === projectId)
+                detail.value = refreshed;
+            }
+          } catch (error) {
+            notify(
+              error instanceof Error ? error.message : String(error),
+              "error",
+            );
+          }
+        }
+        busy.value = false;
+        conversationLoading.value = false;
         scratch();
         void safe(flush);
       }
+      busy.value = false;
+      conversationLoading.value = false;
       markFinished();
     }
   }
@@ -708,6 +1095,21 @@ export const useWorkspace = defineStore("workspace", () => {
   }
   function reviewDevelopment(draft: StoryDevelopmentDraft) {
     if (busy.value || draft.projectId !== detail.value?.project.id) return;
+    const candidate = detail.value?.project.blueprintCandidates.find(
+      (c) => c.development?.id === draft.id,
+    );
+    if (
+      candidate?.conversationId &&
+      candidate.turnId &&
+      candidate.turnId !== selectedTurnId.value
+    ) {
+      void safe(async () => {
+        await openConversation(candidate.conversationId!);
+        await selectVersion(candidate.turnId!);
+        reviewingDevelopment.value = true;
+      });
+      return;
+    }
     developmentDraft.value = JSON.parse(JSON.stringify(draft));
     outputKind.value = "develop";
     taskKind.value = "develop";
@@ -744,15 +1146,27 @@ export const useWorkspace = defineStore("workspace", () => {
   ) {
     if (!detail.value || busy.value) return false;
     const projectId = detail.value.project.id;
+    const turnId =
+      selectedTurn.value?.review.developmentDraft?.id === draft.id
+        ? selectedTurn.value.id
+        : detail.value.project.blueprintCandidates.find(
+            (c) => c.development?.id === draft.id,
+          )?.turnId;
     await flush();
     if (detail.value?.project.id !== projectId) return false;
     const result = await api<{
       detail: ProjectDetail;
       draft: StoryDevelopmentDraft;
       undoId: string;
-    }>("story:apply-development", { projectId, draft, selectedIds });
+    }>("story:apply-development", {
+      projectId,
+      draft,
+      selectedIds,
+      ...(turnId ? { turnId } : {}),
+    });
     if (detail.value?.project.id !== projectId) return false;
     detail.value = result.detail;
+    if (turnId && selectedTurnId.value !== turnId) return true;
     developmentDraft.value = result.draft;
     if (outputKind.value === "develop")
       output.value = developmentText(result.draft);
@@ -845,6 +1259,7 @@ export const useWorkspace = defineStore("workspace", () => {
         detail.value?.project.id === generationProjectId
       ) {
         output.value += event.delta;
+        if (event.turnId) selectedTurnId.value = event.turnId;
         scratch();
       }
     });
@@ -867,6 +1282,24 @@ export const useWorkspace = defineStore("workspace", () => {
     busy,
     imageBusy,
     taskKind,
+    conversations,
+    conversationId,
+    turns,
+    selectedTurnId,
+    selectedTurn,
+    activeConversation,
+    conversationInvalidReason,
+    conversationLoading,
+    loadConversations,
+    openConversation,
+    restoreConversation,
+    newConversation,
+    selectVersion,
+    renameConversation,
+    deleteConversation,
+    currentTaskRequest,
+    markResultApplied,
+    markVersionApplied,
     instruction,
     output,
     outputKind,

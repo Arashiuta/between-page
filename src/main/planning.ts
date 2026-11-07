@@ -22,14 +22,11 @@ import {
   planText,
   planningHints,
   planningLabels,
+  planningTargetSchema,
+  planningDraftSchema,
+  planningItemSchema as itemSchema,
 } from "../shared/planning";
-
-export const planningTargetSchema = z.object({
-  level: z.enum(["synopsis", "volume", "chapter", "scene"]),
-  id: z.string().uuid().optional(),
-  parentId: z.string().uuid().optional(),
-  count: z.number().int().min(1).max(30).optional(),
-});
+export { planningTargetSchema, planningDraftSchema } from "../shared/planning";
 const treeNodeSchema = z.object({
   level: z.enum(["synopsis", "unassigned", "volume", "chapter", "scene"]),
   id: z.string().uuid().optional(),
@@ -40,17 +37,6 @@ export const planningMoveSchema = z.object({
   source: treeNodeSchema,
   target: treeNodeSchema,
   placement: z.enum(["before", "inside", "after"]),
-});
-const itemSchema = z.object({
-  id: z.string().uuid(),
-  title: z.string().trim().min(1).max(500),
-  content: z.string().trim().min(1).max(200_000),
-});
-export const planningDraftSchema = z.object({
-  projectId: z.string().uuid(),
-  target: planningTargetSchema,
-  base: z.string().length(64),
-  items: z.array(itemSchema).min(1).max(30),
 });
 const writeChapter = (repo: StoryRepository, chapter: Chapter) =>
   repo.db

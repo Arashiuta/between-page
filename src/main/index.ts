@@ -25,7 +25,6 @@ import { assertDataLayoutSupported } from "./data-layout";
 import { createProjectWithCover, saveCover } from "./covers";
 import { coverUploadSchema, coverCropSchema } from "../shared/cover";
 import { chat, generateImage, listModels, type Connection } from "./provider";
-import { buildTask, parseMemories } from "./prompts";
 import { buildChapterTitleMessages, parseChapterTitle } from "./chapter-title";
 import {
   importTextDocument,
@@ -37,17 +36,12 @@ import { effectiveRole, roleDefinitions } from "../shared/roles";
 import { materialLimits } from "../shared/materials";
 import { builtinWorkflowTemplates } from "../shared/workflows";
 import { taskKinds } from "../shared/types";
-import { developmentDraftSchema, developmentText } from "../shared/development";
-import {
-  applyDevelopment,
-  parseDevelopment,
-  undoDevelopment,
-} from "./development";
+import { developmentDraftSchema } from "../shared/development";
+import { applyDevelopment } from "./development";
 import {
   planningTargetSchema,
   planningDraftSchema,
   planningBase,
-  parsePlanning,
   savePlanning,
   applyPlanning,
   planningHistory,
@@ -68,6 +62,17 @@ import {
 } from "./writing";
 import appIcon from "../../build/icon.png?asset";
 import trayIcon from "../../build/icon.ico?asset";
+import {
+  conversationHandlers,
+  runCreationTask,
+  prepareConversationTask,
+  applyConversationPlanning,
+  applyConversationDevelopment,
+  applyConversationMemory,
+  synchronizeCandidateEdits,
+  undoConversationDevelopment,
+} from "./conversations";
+import { textSelectionSchema } from "../shared/conversations";
 import {
   resolveDataDir,
   initializeDirectories,
@@ -196,6 +201,9 @@ const taskSchema = z.object({
   outputMode: z.enum(["rewrite", "analysis"]).optional(),
   usePlanDraft: z.boolean().optional(),
   referenceNovelPlan: z.boolean().optional(),
+  conversationId: idSchema.optional(),
+  parentTurnId: idSchema.optional(),
+  selectionRange: textSelectionSchema.optional(),
 });
 function assertIdle() {
   if (jobs.size) throw new Error("请先停止或等待当前生成任务完成。");
@@ -259,6 +267,8 @@ const handlers: Record<
           })
           .nullable()
           .optional(),
+        conversationId: idSchema.optional(),
+        selectedTurnId: idSchema.optional(),
       })
       .parse(p);
     repo.getProject(v.projectId);
@@ -326,6 +336,8 @@ const handlers: Record<
               source: taskKindSchema,
               createdAt: z.string().max(40),
               development: developmentDraftSchema.optional(),
+              conversationId: idSchema.optional(),
+              turnId: idSchema.optional(),
             }),
           )
           .max(100)
@@ -333,7 +345,15 @@ const handlers: Record<
         archived: z.boolean().optional(),
       })
       .parse(p);
-    return repo.updateProject(id, patch);
+    return repo.db.transaction(() => {
+      if (patch.blueprintCandidates)
+        patch.blueprintCandidates = synchronizeCandidateEdits(
+          repo,
+          id,
+          patch.blueprintCandidates,
+        );
+      return repo.updateProject(id, patch);
+    })();
   },
   "project:delete": async (p) => {
     assertIdle();
@@ -473,8 +493,16 @@ const handlers: Record<
       .object({
         draft: planningDraftSchema,
         selectedIds: z.array(idSchema).min(1).max(30),
+        turnId: idSchema.optional(),
       })
       .parse(p);
+    if (v.turnId)
+      return applyConversationPlanning(
+        repo,
+        v.draft.projectId,
+        v.turnId,
+        v.selectedIds,
+      );
     const detail = applyPlanning(repo, v.draft, v.selectedIds);
     return { detail, base: planningBase(repo, v.draft.projectId) };
   },
@@ -558,8 +586,16 @@ const handlers: Record<
         projectId: idSchema,
         draft: developmentDraftSchema,
         selectedIds: z.array(idSchema).min(1).max(30),
+        turnId: idSchema.optional(),
       })
       .parse(p);
+    if (value.turnId)
+      return applyConversationDevelopment(
+        repo,
+        value.projectId,
+        value.turnId,
+        value.selectedIds,
+      );
     return applyDevelopment(
       repo,
       value.projectId,
@@ -569,7 +605,7 @@ const handlers: Record<
   },
   "story:undo-development": (p) => {
     const value = z.object({ projectId: idSchema, undoId: idSchema }).parse(p);
-    return undoDevelopment(repo, value.projectId, value.undoId);
+    return undoConversationDevelopment(repo, value.projectId, value.undoId);
   },
   "chapter:delete": (p) => {
     assertIdle();
@@ -720,13 +756,15 @@ const handlers: Record<
   },
   "ai:preview": (p) => {
     const request = taskSchema.parse(p);
-    const built = buildTask(repo, request);
+    const { built, omittedTurns } = prepareConversationTask(repo, request);
     return {
       systemPrompt: built.messages[0].content,
       context: built.messages[1].content,
       model: connectionForRole(request.kind).model,
       coverage: built.coverage,
       omitted: built.omitted,
+      messages: built.messages,
+      omittedTurns,
     };
   },
   "card:copy": (p) => {
@@ -786,6 +824,7 @@ const handlers: Record<
       .object({
         chapterId: idSchema,
         revisionId: idSchema,
+        turnId: idSchema.optional(),
         records: z
           .array(
             z.object({
@@ -797,6 +836,12 @@ const handlers: Record<
           .max(24),
       })
       .parse(p);
+    if (value.turnId)
+      return applyConversationMemory(
+        repo,
+        repo.getChapter(value.chapterId).projectId,
+        value.turnId,
+      );
     return repo.saveGeneratedMemories(
       value.chapterId,
       value.revisionId,
@@ -873,60 +918,20 @@ const handlers: Record<
   "ai:run": async (p, event) => {
     const request: TaskRequest = taskSchema.parse(p);
     if (jobs.has(request.requestId)) throw new Error("任务已经开始。");
-    const built = buildTask(repo, request);
-    const planBase = request.planningTarget
-      ? planningBase(repo, request.projectId)
-      : "";
     const controller = new AbortController();
     jobs.set(request.requestId, controller);
     try {
-      const text = await chat(
-        connectionForRole(request.kind),
-        built.messages,
-        (delta) => {
+      const config = connectionForRole(request.kind);
+      return await runCreationTask(repo, request, {
+        model: config.model,
+        signal: controller.signal,
+        generate: (messages, delta) =>
+          chat(config, messages, delta, controller.signal),
+        progress: (progress) => {
           if (!event.sender.isDestroyed())
-            event.sender.send("ai:progress", {
-              requestId: request.requestId,
-              delta,
-            });
+            event.sender.send("ai:progress", progress);
         },
-        controller.signal,
-      );
-      if (controller.signal.aborted)
-        throw new Error("生成已停止，收到的内容保留在草稿区。");
-      if (request.planningTarget) {
-        const draft = parsePlanning(
-          repo,
-          request.projectId,
-          request.planningTarget,
-          planBase,
-          text,
-        );
-        return { text, planningDraft: draft, resultType: "planning" };
-      }
-      if (request.kind === "notes") {
-        const records = parseMemories(text);
-        return {
-          text: records.map((r) => `- [${r.kind}] ${r.content}`).join("\n\n"),
-          memoryRecords: records,
-          memoryRevisionId: built.revisionId,
-        };
-      }
-      if (request.kind === "develop") {
-        const draft = parseDevelopment(text, built.developmentSnapshot!);
-        return { text: developmentText(draft), developmentDraft: draft };
-      }
-      return {
-        text,
-        resultType:
-          request.outputMode === "analysis" ||
-          ["check", "pacing", "arc"].includes(request.kind)
-            ? "analysis"
-            : ["revise", "scene", "dialogue"].includes(request.kind) &&
-                request.outputMode === "rewrite"
-              ? "rewrite"
-              : undefined,
-      };
+      });
     } finally {
       jobs.delete(request.requestId);
     }
@@ -1209,6 +1214,7 @@ if (hasLock) {
       app.setName("页间");
       assertDataLayoutSupported(dataDir);
       repo = new StoryRepository(join(dataDir, "database", "storybook.sqlite"));
+      Object.assign(handlers, conversationHandlers(repo));
       const layout = await upgradeDataLayout(repo, dataDir);
       await cleanupDeletedAssets(repo, dataDir);
       if (layout.missing.length)

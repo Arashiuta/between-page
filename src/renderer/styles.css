@@ -4839,3 +4839,49 @@ button:disabled {
     max-height: 240px;
   }
 }
+.conversation-history {
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.conversation-management {
+  margin-top: 8px;
+}
+.conversation-versions {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+.conversation-versions details {
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+}
+.conversation-versions details.selected {
+  border-color: var(--success);
+}
+.conversation-versions summary {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 0.86rem;
+}
+.conversation-versions small {
+  color: var(--muted);
+}
+.conversation-instruction {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.86rem;
+}
+.conversation-response {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow-y: auto;
+  font: inherit;
+  font-size: 0.86rem;
+}

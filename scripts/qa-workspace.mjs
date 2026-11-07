@@ -63,7 +63,7 @@ const load = (path) => server.ssrLoadModule(resolve(root, path));
 const { StoryRepository } = await load("src/main/database.ts");
 const planning = await load("src/main/planning.ts");
 const writing = await load("src/main/writing.ts");
-const { buildTask } = await load("src/main/prompts.ts");
+const creation = await load("src/main/conversations.ts");
 const { defaultRoleSettings } = await load("src/shared/roles.ts");
 const { normalizeSoftware } = await load("src/shared/appearance.ts");
 const { textToDocument } = await load("src/shared/document.ts");
@@ -205,7 +205,10 @@ const settings = {
   dataDir: "内存数据库（验收专用）",
   version: "0.3.3-qa",
 };
+const creationHandlers = creation.conversationHandlers(repo);
+let generation = 0;
 handle = async (action, p) => {
+  if (creationHandlers[action]) return creationHandlers[action](p);
   if (action === "bootstrap")
     return {
       projects: repo.listProjects(),
@@ -217,6 +220,12 @@ handle = async (action, p) => {
   if (action === "project:get") return repo.getDetail(p);
   if (action === "project:update") {
     const { id, ...patch } = p;
+    if (patch.blueprintCandidates)
+      patch.blueprintCandidates = creation.synchronizeCandidateEdits(
+        repo,
+        id,
+        patch.blueprintCandidates,
+      );
     return repo.updateProject(id, patch);
   }
   if (action === "project:create") return repo.createProject(p);
@@ -261,10 +270,18 @@ handle = async (action, p) => {
   if (action === "planning:save")
     return planning.savePlanning(repo, p.projectId, p.target, p);
   if (action === "planning:apply")
-    return {
-      detail: planning.applyPlanning(repo, p.draft, p.selectedIds),
-      base: planning.planningBase(repo, p.draft.projectId),
-    };
+    if (p.turnId)
+      return creation.applyConversationPlanning(
+        repo,
+        p.draft.projectId,
+        p.turnId,
+        p.selectedIds,
+      );
+    else
+      return {
+        detail: planning.applyPlanning(repo, p.draft, p.selectedIds),
+        base: planning.planningBase(repo, p.draft.projectId),
+      };
   if (action === "planning:history") return planning.planningHistory(repo, p);
   if (action === "planning:snapshot")
     return planning.snapshotPlanning(repo, p, "手动版本");
@@ -297,7 +314,22 @@ handle = async (action, p) => {
     return repo.getDetail(p.projectId);
   }
   if (action === "memory:apply-generated")
-    return repo.saveGeneratedMemories(p.chapterId, p.revisionId, p.records);
+    return p.turnId
+      ? creation.applyConversationMemory(
+          repo,
+          repo.getChapter(p.chapterId).projectId,
+          p.turnId,
+        )
+      : repo.saveGeneratedMemories(p.chapterId, p.revisionId, p.records);
+  if (action === "story:apply-development")
+    return creation.applyConversationDevelopment(
+      repo,
+      p.projectId,
+      p.turnId,
+      p.selectedIds,
+    );
+  if (action === "story:undo-development")
+    return creation.undoConversationDevelopment(repo, p.projectId, p.undoId);
   if (action === "card:save") return repo.saveCard(p);
   if (action === "card:delete") return repo.deleteCard(p);
   if (action === "memory:add")
@@ -315,62 +347,69 @@ handle = async (action, p) => {
   if (action === "project:delete") return repo.deleteArchivedProject(p);
   if (action === "roles:save") return p;
   if (action === "ai:preview") {
-    const built = buildTask(repo, p);
+    const { built, omittedTurns } = creation.prepareConversationTask(repo, p);
     return {
       systemPrompt: built.messages[0].content,
       context: built.messages[1].content,
       coverage: built.coverage,
       omitted: built.omitted,
       model: settings.text.model,
+      messages: built.messages,
+      omittedTurns,
     };
   }
   if (action === "ai:run") {
     console.log(
       `QA AI request: ${p.kind} ${p.projectId} ${p.planningTarget?.level ?? "prose"}`,
     );
-    buildTask(repo, p);
+    const version = ++generation;
+    let text;
     if (p.planningTarget) {
       const count =
         p.planningTarget.id || p.planningTarget.level === "synopsis"
           ? 1
           : (p.planningTarget.count ?? 1);
-      const text = JSON.stringify({
+      text = JSON.stringify({
         items: Array.from({ length: count }, (_, i) => ({
-          title: `沙海旅程 ${i + 1}`,
+          title: `沙海旅程 ${i + 1} · 第 ${version} 稿`,
           content: `目标：寻找线索。行动：在第 ${i + 1} 个驿站与向导交谈。转折：发现来信中隐藏的印记。结束位置：决定沿旧公路继续前进。`,
         })),
       });
-      return {
-        text,
-        resultType: "planning",
-        planningDraft: planning.parsePlanning(
-          repo,
-          p.projectId,
-          p.planningTarget,
-          planning.planningBase(repo, p.projectId),
-          text,
-        ),
-      };
-    }
-    if (p.outputMode === "analysis")
-      return {
-        text: "对白可以减少解释，用停顿和动作表达人物尚未说出的顾虑。",
-        resultType: "analysis",
-      };
-    if (p.kind === "notes") {
-      const chapter = repo.getChapter(p.chapterId);
-      return {
-        text: "旅人来到驿站。",
-        memoryRevisionId: chapter.acceptedRevisionId,
-        memoryRecords: [{ kind: "fact", content: "旅人来到驿站。" }],
-      };
-    }
-    return {
-      text: "风把沙粒推过门槛。修理师按住信封，在那枚褪色的印记上停了片刻。\n\n门外传来刹车声。他抬起头，看见向导正把一只空油桶从车上搬下来。",
-      resultType: ["revise", "scene", "dialogue"].includes(p.kind)
-        ? "rewrite"
-        : "prose",
-    };
+    } else if (p.kind === "notes")
+      text = JSON.stringify({
+        records: [{ kind: "fact", content: `旅人来到驿站。审核稿 ${version}` }],
+      });
+    else if (p.kind === "develop")
+      text = JSON.stringify({
+        summary: `设定审核稿 ${version}`,
+        changes: [
+          {
+            target: "blueprint",
+            title: "下一站",
+            content: `旅人决定前往盐湖。版本 ${version}`,
+            mode: "append",
+            basis: "proposal",
+            sources: [],
+          },
+        ],
+        warnings: [],
+      });
+    else if (
+      p.outputMode === "analysis" ||
+      ["check", "pacing", "arc"].includes(p.kind)
+    )
+      text = `审核建议 ${version}：对白可以减少解释，用停顿和动作表达人物尚未说出的顾虑。`;
+    else
+      text = `风把沙粒推过门槛。修理师按住信封，在那枚褪色的印记上停了片刻。\n\n门外传来刹车声。他抬起头，看见向导正把一只空油桶从车上搬下来。\n\n（本地模拟第 ${version} 稿：${p.instruction || "按当前资料创作"}）`;
+    return creation.runCreationTask(repo, p, {
+      model: settings.text.model,
+      signal: new AbortController().signal,
+      generate: async (_messages, delta) => {
+        delta(text);
+        return text;
+      },
+      progress: () => {},
+    });
   }
   if (action.startsWith("window:") || action === "ai:cancel") return true;
   throw new Error(`验收工具尚未模拟 ${action}`);
