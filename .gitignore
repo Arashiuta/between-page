@@ -2,6 +2,9 @@
 node_modules/
 .npm/
 .pnpm-store/
+.claude
+tests
+docs
 
 # Build output and packaged applications
 /out/
