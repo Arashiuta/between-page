@@ -3,12 +3,16 @@ import { computed, ref, watch } from "vue";
 import { NButton, NPopconfirm } from "naive-ui";
 import { useWorkspace } from "../stores/workspace";
 import { isLegacyPlanning } from "../../shared/blueprint";
-const props = defineProps<{ kind: "settings" | "blueprint" | "outline" }>();
+const props = defineProps<{
+  kind: "settings" | "blueprint" | "outline" | "memory";
+}>();
 const store = useWorkspace(),
   opened = ref<string[]>([]);
 const sets = computed(() =>
-  store.changeSets.filter(
-    (s) => (isLegacyPlanning(s) ? "outline" : s.kind) === props.kind,
+  store.changeSets.filter((s) =>
+    props.kind === "memory"
+      ? s.kind === "notes" || s.kind === "memory_tune"
+      : (isLegacyPlanning(s) ? "outline" : s.kind) === props.kind,
   ),
 );
 const key = computed(() => props.kind + ".candidates");
@@ -50,9 +54,11 @@ async function remove(id: string) {
       {{
         kind === "settings"
           ? "设定候选"
-          : kind === "outline"
-            ? "大纲候选"
-            : "额外设定候选"
+          : kind === "memory"
+            ? "故事记忆候选"
+            : kind === "outline"
+              ? "大纲候选"
+              : "额外设定候选"
       }}
       <span>{{ sets.length }}</span>
     </button>

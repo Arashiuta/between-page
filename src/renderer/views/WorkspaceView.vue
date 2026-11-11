@@ -13,11 +13,19 @@ import {
   ChevronLeft,
   Download,
   GripVertical,
+  Users,
+  Globe,
+  Lightbulb,
   Plus,
   Trash2,
 } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
-import type { Card, ProjectDetail, Revision } from "../../shared/types";
+import type {
+  Card,
+  CardKind,
+  ProjectDetail,
+  Revision,
+} from "../../shared/types";
 import { memoryLabels } from "../../shared/types";
 import { freedomOptions } from "../../shared/creation";
 import StoryEditor from "../components/StoryEditor.vue";
@@ -34,6 +42,8 @@ const store = useWorkspace(),
   route = useRoute(),
   router = useRouter(),
   tab = ref("text"),
+  cardKind = ref<CardKind>("character"),
+  memoryChapterIds = ref<string[]>([]),
   loading = ref(false),
   cardOpen = ref(false),
   editingCard = ref<Card | null>(null),
@@ -92,6 +102,35 @@ const chapterPlan = computed(() =>
   store.detail?.project.blueprint.nodes.find(
     (n) => n.level === "chapter" && n.chapterId === store.chapterId,
   ),
+);
+const visibleStoryCards = computed(
+  () =>
+    store.detail?.cards.filter((item) => item.kind === cardKind.value) ?? [],
+);
+const eligibleMemoryChapters = computed(
+  () =>
+    store.detail?.chapters.filter(
+      (item) => item.acceptedRevisionId && !item.needsReview,
+    ) ?? [],
+);
+watch(
+  () => store.detail?.project.id,
+  () => {
+    memoryChapterIds.value = [];
+    store.notesChapterIds = [];
+  },
+);
+watch(
+  () => store.chapter?.id,
+  (id) => {
+    if (
+      !memoryChapterIds.value.length &&
+      id &&
+      eligibleMemoryChapters.value.some((chapter) => chapter.id === id)
+    )
+      memoryChapterIds.value = [id];
+  },
+  { immediate: true },
 );
 const relatedPlans = computed(() =>
   chapterPlan.value
@@ -523,6 +562,10 @@ async function checkpoint() {
                   @click="store.safe(() => tool('polish'))"
                   >打磨选中文段</NButton
                 ><NButton
+                  :disabled="store.busy || !store.chapter.content.trim()"
+                  @click="store.safe(() => tool('expand'))"
+                  >扩写本章</NButton
+                ><NButton
                   :disabled="store.busy"
                   @click="store.safe(() => tool('check'))"
                   >检查故事</NButton
@@ -574,30 +617,54 @@ async function checkpoint() {
             <div>
               <h2>世界与人物</h2>
               <p class="field-help">
-                全部有效设定与关联参考图参与 AI
-                请求。从创作资料库引入的资料只读。
+                叙事偏好和所选类别中的资料参与创作请求；从创作资料库引入的资料只读。
               </p>
             </div>
-            <NButton @click="card(null)">添加资料</NButton>
+            <NButton @click="card(null)"
+              >添加{{
+                cardKind === "character"
+                  ? "人物"
+                  : cardKind === "world"
+                    ? "世界资料"
+                    : "灵感资料"
+              }}</NButton
+            >
           </div>
           <div class="workbench-actions">
             <NButton @click="importOpen = true">从资料库带入</NButton>
           </div>
-          <label class="field-label">世界规则</label
-          ><NInput
-            :value="store.detail.project.world"
-            type="textarea"
-            :autosize="{ minRows: 4, maxRows: 12 }"
-            @update:value="(v) => store.editProject({ world: v })"
-          /><label class="field-label">叙事偏好</label
+          <label class="field-label">叙事偏好</label
           ><NInput
             :value="store.detail.project.style"
             type="textarea"
             :autosize="{ minRows: 3, maxRows: 8 }"
             @update:value="(v) => store.editProject({ style: v })"
           />
+          <nav class="setting-domain-tabs" aria-label="人物与世界资料">
+            <button
+              v-for="item in [
+                { id: 'character' as CardKind, label: '人物', icon: Users },
+                { id: 'world' as CardKind, label: '世界', icon: Globe },
+                {
+                  id: 'inspiration' as CardKind,
+                  label: '灵感资料',
+                  icon: Lightbulb,
+                },
+              ]"
+              :key="item.id"
+              type="button"
+              :class="{ active: cardKind === item.id }"
+              :aria-pressed="cardKind === item.id"
+              @click="cardKind = item.id"
+            >
+              <component :is="item.icon" :size="16" />{{ item.label }}
+              <span>{{
+                store.detail.cards.filter((c) => c.kind === item.id).length
+              }}</span>
+            </button>
+          </nav>
           <div class="setting-cards">
-            <article v-for="c in store.detail.cards" :key="c.id">
+            <article v-for="c in visibleStoryCards" :key="c.id">
               <div class="section-toolbar">
                 <h3>{{ c.name }}</h3>
                 <NButton size="tiny" @click="card(c)">{{
@@ -629,20 +696,61 @@ async function checkpoint() {
                 >
               </div>
             </article>
+            <p v-if="!visibleStoryCards.length" class="field-help">
+              此类别暂无资料。
+            </p>
           </div>
           <CandidateShelf kind="settings" />
         </section>
         <section v-else-if="tab === 'memory'" class="studio-section">
           <div class="section-toolbar">
             <h2>故事记忆</h2>
-            <NButton
+          </div>
+          <p class="field-help">
+            选择已采用且已复核的章节，逐章提取摘要；后续创作只注入已启用的记忆。
+          </p>
+          <div class="memory-extract-controls">
+            <NSelect
+              v-model:value="memoryChapterIds"
+              multiple
+              filterable
               :disabled="store.busy"
-              @click="store.safe(() => tool('notes'))"
-              >从已采用本章整理</NButton
+              :options="
+                eligibleMemoryChapters.map((chapter) => ({
+                  label: `第 ${chapter.position} 章 · ${chapter.title}`,
+                  value: chapter.id,
+                }))
+              "
+              placeholder="选择要整理的章节"
+            />
+            <NButton
+              type="primary"
+              :disabled="store.busy || !memoryChapterIds.length"
+              @click="
+                store.safe(async () => {
+                  store.notesChapterIds = [...memoryChapterIds];
+                  await tool('notes');
+                })
+              "
+              >提取章节摘要</NButton
+            >
+            <NButton
+              :disabled="
+                store.busy ||
+                !store.detail.memories.some((memory) => memory.active)
+              "
+              @click="
+                store.safe(async () => {
+                  store.instruction =
+                    '检查章节记忆间的冲突与后续变化，合并重复记录，并把已闭环伏笔整理为事实。';
+                  await store.runTask('memory_tune');
+                })
+              "
+              >记忆调优</NButton
             >
           </div>
           <p class="field-help">
-            记忆须有已采用正文来源；额外设定中的未来事件不能成为事实。
+            调优只分析启用的记忆。章节来源按顺序处理；手工记忆冲突会提示审核，不会自动覆盖。
           </p>
           <article
             v-for="m in store.detail.memories"
@@ -682,6 +790,7 @@ async function checkpoint() {
               >删除这条记忆？</NPopconfirm
             >
           </article>
+          <CandidateShelf kind="memory" />
         </section>
         <section v-else-if="tab === 'images'" class="studio-section">
           <ImagePanel :initial-prompt="imagePrompt" />
@@ -700,6 +809,7 @@ async function checkpoint() {
       v-model:show="cardOpen"
       :card="editingCard"
       :project-id="store.detail.project.id"
+      :initial-kind="cardKind"
     /><ChangeReview />
     <NModal
       v-model:show="historyOpen"
@@ -936,6 +1046,61 @@ async function checkpoint() {
   gap: 16px;
   margin-top: 25px;
 }
+.setting-domain-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 20px 0 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--border);
+}
+.setting-domain-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+.setting-domain-tabs button:hover {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--ink);
+}
+.setting-domain-tabs button.active {
+  border-color: var(--accent-line);
+  background: var(--surface);
+  color: var(--primary);
+  font-weight: 600;
+}
+.setting-domain-tabs button span {
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+}
+.memory-extract-controls {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 760px;
+  margin: 12px 0 20px;
+}
+.memory-extract-controls .n-select {
+  flex: 1;
+  min-width: 180px;
+}
 .setting-cards article {
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -1081,6 +1246,12 @@ async function checkpoint() {
   .studio-text,
   .studio-section {
     padding: 14px;
+  }
+  .memory-extract-controls {
+    flex-direction: column;
+  }
+  .memory-extract-controls .n-select {
+    width: 100%;
   }
 }
 
@@ -1296,6 +1467,24 @@ async function checkpoint() {
 }
 .studio-section {
   padding: 28px 32px;
+}
+.studio-body :deep(.n-button--default-type) {
+  border-color: var(--border);
+  background: var(--surface-muted);
+  color: var(--ink);
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+.studio-body :deep(.n-button--default-type:not(.n-button--disabled):hover) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+.studio-body :deep(.n-button:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 .studio-section > h2 {
   font-family: var(--serif);

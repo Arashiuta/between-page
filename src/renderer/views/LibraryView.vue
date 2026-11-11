@@ -75,10 +75,17 @@ async function sample() {
       genre: "日常 · 微悬疑",
       cardIds: [card.id],
     });
+    await store.saveCard({
+      projectId: p.id,
+      kind: "world",
+      name: "海边小城",
+      description:
+        "一座经常起雾的海边小城。旧书店名为「第十三页」，晚上八点开门，凌晨两点打烊。这里偶尔发生难以解释的小事，但生活仍按自己的节奏继续。",
+      constraints: "雾中的异事保持克制，不改变日常生活的基本秩序。",
+      referenceIds: [],
+    });
     await store.openProject(p.id);
     store.editProject({
-      world:
-        "一座经常起雾的海边小城。旧书店名为「第十三页」，晚上八点开门，凌晨两点打烊。这里偶尔发生难以解释的小事，但生活仍按自己的节奏继续。",
       style:
         "第三人称有限视角，跟随林屿。对白克制，以动作与细节表达情绪。让悬疑自然地藏在日常里。",
     });

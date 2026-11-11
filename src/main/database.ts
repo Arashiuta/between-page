@@ -100,7 +100,7 @@ export class StoryRepository {
           "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
         )
         .all().length > 0;
-    if ((hasTables && version !== 2) || version > 2) {
+    if ((hasTables && ![2, 3, 4].includes(version)) || version > 4) {
       this.db.close();
       throw new Error(
         "数据库格式不支持本次工作台重构。请使用新的空数据目录；本版本不迁移旧开发数据。",
@@ -125,8 +125,54 @@ export class StoryRepository {
       CREATE INDEX IF NOT EXISTS idx_revisions_chapter ON revisions(chapter_id);
       CREATE TABLE IF NOT EXISTS change_sets (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), payload TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_change_sets_project ON change_sets(project_id);
-      PRAGMA user_version = 2;
     `);
+    if (version === 2) {
+      this.db.transaction(() => {
+        for (const row of this.db
+          .prepare("SELECT id, payload FROM projects")
+          .all() as { id: string; payload: string }[]) {
+          const project = JSON.parse(row.payload) as Project;
+          if (!project.world?.trim()) continue;
+          const card: Card = {
+            id: randomUUID(),
+            projectId: project.id,
+            kind: "world",
+            name: "世界规则",
+            description: project.world,
+            constraints: "",
+            sections: [],
+            documents: [],
+            referenceIds: [],
+            updatedAt: now(),
+          };
+          this.db
+            .prepare("INSERT INTO cards VALUES (?, ?, ?)")
+            .run(card.id, project.id, JSON.stringify(card));
+          project.world = "";
+          this.db
+            .prepare("UPDATE projects SET payload = ? WHERE id = ?")
+            .run(JSON.stringify(project), project.id);
+        }
+        this.db.pragma("user_version = 3");
+      })();
+    }
+    if (version < 4) {
+      this.db.transaction(() => {
+        for (const row of this.db
+          .prepare("SELECT id, payload FROM creation_conversations")
+          .all() as { id: string; payload: string }[]) {
+          const conversation = JSON.parse(row.payload);
+          conversation.saved = true;
+          conversation.archived = false;
+          this.db
+            .prepare(
+              "UPDATE creation_conversations SET payload = ? WHERE id = ?",
+            )
+            .run(JSON.stringify(conversation), row.id);
+        }
+        this.db.pragma("user_version = 4");
+      })();
+    } else this.db.pragma("user_version = 4");
     for (const row of this.db
       .prepare("SELECT id, payload FROM creation_turns")
       .all() as { id: string; payload: string }[]) {

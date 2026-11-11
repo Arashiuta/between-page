@@ -20,6 +20,12 @@ const groups = [
     name: "资料导入与章节命名",
     roles: roleDefinitions.filter((r) => r.id === "title"),
   },
+  {
+    name: "故事记忆",
+    roles: roleDefinitions.filter(
+      (r) => r.id === "notes" || r.id === "memory_tune",
+    ),
+  },
 ];
 const store = useWorkspace(),
   route = useRoute();

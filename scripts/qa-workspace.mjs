@@ -161,8 +161,16 @@ for (const mode of ["novel", "explore"]) {
     cardIds: [libraryCard.id],
   });
   repo.updateProject(p.id, {
-    world: "沙海规则：水源稀少，通信依靠驿站，不能凭空传送物品。",
     style: "第三人称有限视角，以行动和细节表现情绪。",
+  });
+  repo.saveCard({
+    projectId: p.id,
+    kind: "world",
+    name: "沙海规则",
+    description: "水源稀少，通信依靠驿站，不能凭空传送物品。",
+    constraints: "远行者离开驿站前必须登记水量。",
+    sections: [],
+    referenceIds: [],
   });
   const img = repo.addImage({
     id: randomUUID(),
@@ -209,6 +217,7 @@ for (const mode of ["novel", "explore"]) {
     ),
   });
   repo.adoptChapter(chapter.id);
+  repo.addMemory(p.id, "summary", "阿禾在驿站收到一封没有署名的信。");
   const section = {
     id: randomUUID(),
     level: "section",
@@ -303,9 +312,12 @@ function response(r) {
           ]
         : [
             {
-              type: "project",
-              field: "world",
-              content: d.project.world + "\n远行者离开驿站前必须登记水量。",
+              type: "card",
+              kind: "world",
+              name: "新世界资料",
+              field: "description",
+              title: "",
+              content: "远行者离开驿站前必须登记水量。",
             },
           ],
     });
@@ -349,15 +361,34 @@ function response(r) {
     return "清晨的风绕过驿站，阿禾将最后一根门栓推回原位。\n\n柜台上多了一张地图，水渍恰好圈住一处早已废弃的地名。";
   if (r.kind === "continue")
     return "阿禾没有碰那杯水。他把信封翻了个面，借窗边的光辨认纸上的压痕。\n\n老人终于开口：“如果要走，等风停下来。”";
+  if (r.kind === "expand")
+    return "阿禾停在驿站门前，先伸手摸过生锈的门轴。金属冰凉，指腹蹭下一点暗红色的锈。\n\n风从沙海深处吹来，一封没有署名的信滑到他的脚边。阿禾没有立刻去捡，而是先看了看门外的脚印。信封边角干燥，纸面却留着浅浅的压痕。\n\n柜台后的老人把一杯水推近了一些。阿禾抬起头，问道：“有人来过吗？”";
   if (r.kind === "polish")
     return "风贴着门缝滑进来，阿禾的手指在锈迹上停了一瞬。";
   if (r.kind === "title") return JSON.stringify({ title: "风停之前" });
   if (r.kind === "notes")
     return JSON.stringify({
       records: [
-        { kind: "fact", content: "阿禾在驿站收到一封没有署名、边角干燥的信。" },
+        {
+          kind: "summary",
+          content: "阿禾在驿站收到一封没有署名、边角干燥的信。",
+        },
       ],
     });
+  if (r.kind === "memory_tune") {
+    const manual = d.memories.find((memory) => memory.active && memory.manual);
+    return JSON.stringify({
+      changes: [],
+      manualConflicts: manual
+        ? [
+            {
+              memoryIds: [manual.id],
+              reason: "手工摘要需要与章节事实复核。",
+            },
+          ]
+        : [],
+    });
+  }
   if (r.kind === "check") return '{"findings":[]}';
   return "沙海边缘的旧驿站，年轻修理师身穿灰色斗篷，手持米白色信封，侧逆光，风沙与安静的室内形成层次，克制的叙事情绪。";
 }
@@ -421,19 +452,39 @@ handle = async (action, p) => {
         generate: async (messages, delta) => {
           const serialized = JSON.stringify(messages),
             d = repo.getDetail(p.projectId);
-          for (const text of [
-            d.project.world,
-            d.project.style,
-            ...d.project.blueprint.nodes.map((n) => n.content),
-            ...d.cards.flatMap((c) => [
-              c.description,
-              c.constraints,
-              ...c.sections.map((s) => s.content),
-              ...c.documents.filter((x) => x.enabled).map((x) => x.content),
-            ]),
-          ])
-            if (text && !serialized.includes(JSON.stringify(text).slice(1, -1)))
-              throw Error("验收断言：缺少完整基础资料");
+          if (p.kind === "memory_tune") {
+            for (const chapter of d.chapters)
+              if (
+                chapter.content &&
+                serialized.includes(
+                  JSON.stringify(chapter.content).slice(1, -1),
+                )
+              )
+                throw Error("验收断言：记忆调优包含章节正文");
+            for (const memory of d.memories.filter((item) => item.active))
+              if (
+                !serialized.includes(
+                  JSON.stringify(memory.content).slice(1, -1),
+                )
+              )
+                throw Error("验收断言：记忆调优缺少启用记忆");
+          } else {
+            for (const text of [
+              d.project.style,
+              ...d.project.blueprint.nodes.map((n) => n.content),
+              ...d.cards.flatMap((c) => [
+                c.description,
+                c.constraints,
+                ...c.sections.map((s) => s.content),
+                ...c.documents.filter((x) => x.enabled).map((x) => x.content),
+              ]),
+            ])
+              if (
+                text &&
+                !serialized.includes(JSON.stringify(text).slice(1, -1))
+              )
+                throw Error("验收断言：缺少完整基础资料");
+          }
           if (
             d.cards.some((c) => c.referenceIds.length) &&
             !serialized.includes('"type":"image_url"')

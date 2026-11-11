@@ -65,6 +65,22 @@ function currentTarget(d: ProjectDetail, t: ChangeTarget): unknown {
         chapter: d.chapters.find((c) => c.id === t.chapterId),
         memories: d.memories.filter((m) => m.chapterId === t.chapterId),
       };
+    case "memory-tune": {
+      const chapter = t.chapterId
+        ? d.chapters.find((c) => c.id === t.chapterId)
+        : null;
+      return {
+        memories: d.memories.filter((m) => t.memoryIds.includes(m.id)),
+        source: chapter
+          ? {
+              id: chapter.id,
+              acceptedRevisionId: chapter.acceptedRevisionId,
+              needsReview: chapter.needsReview,
+              position: chapter.position,
+            }
+          : null,
+      };
+    }
   }
 }
 export function buildChangeSet(
@@ -74,7 +90,8 @@ export function buildChangeSet(
   ids: { conversationId: string; turnId: string },
   base: string,
 ): ChangeSet {
-  const changes: ProposedChange[] = [];
+  const changes: ProposedChange[] = [],
+    warnings: string[] = [];
   const add = (
     target: ChangeTarget,
     before: string,
@@ -95,7 +112,12 @@ export function buildChangeSet(
     });
   const chapter =
     "chapterId" in r ? d.chapters.find((c) => c.id === r.chapterId) : undefined;
-  if (r.kind === "opening" || r.kind === "continue" || r.kind === "polish") {
+  if (
+    r.kind === "opening" ||
+    r.kind === "continue" ||
+    r.kind === "expand" ||
+    r.kind === "polish"
+  ) {
     if (!chapter) throw new Error("章节不存在。");
     add(
       {
@@ -106,10 +128,16 @@ export function buildChangeSet(
             ? "opening"
             : r.kind === "continue"
               ? "append"
-              : "selection",
+              : r.kind === "expand"
+                ? "replace"
+                : "selection",
         ...(r.kind === "polish" ? { selection: r.selection } : {}),
       },
-      r.kind === "polish" ? r.selection.text : "",
+      r.kind === "expand"
+        ? chapter.content
+        : r.kind === "polish"
+          ? r.selection.text
+          : "",
       text,
     );
   } else if (r.kind === "title") {
@@ -191,7 +219,7 @@ export function buildChangeSet(
               z
                 .object({
                   type: z.literal("project"),
-                  field: z.enum(["world", "style"]),
+                  field: z.literal("style"),
                   content: z.string().min(1).max(200000),
                 })
                 .strict(),
@@ -257,7 +285,15 @@ export function buildChangeSet(
       );
     }
   } else if (r.kind === "notes") {
-    if (!chapter?.acceptedRevisionId || chapter.needsReview)
+    const selected = r.chapterIds
+      ? r.chapterIds.map((id) => d.chapters.find((item) => item.id === id)!)
+      : chapter
+        ? [chapter]
+        : [];
+    if (
+      !selected.length ||
+      selected.some((item) => !item.acceptedRevisionId || item.needsReview)
+    )
       throw new Error("记忆来源不可用。");
     const parsed = z
       .object({
@@ -265,27 +301,184 @@ export function buildChangeSet(
           .array(
             z
               .object({
-                kind: z.enum(memoryKinds),
+                kind: r.chapterIds ? z.literal("summary") : z.enum(memoryKinds),
                 content: z.string().min(1).max(3000),
+                chapterId: z.string().uuid().optional(),
+                revisionId: z.string().uuid().optional(),
               })
               .strict(),
           )
           .min(1)
-          .max(24),
+          .max(r.chapterIds ? r.chapterIds.length * 24 : 24),
       })
       .strict()
       .parse(cleanJSON(text));
-    for (const m of parsed.records)
+    const usedSources = new Set<string>();
+    for (const m of parsed.records) {
+      const source = m.chapterId
+        ? selected.find((item) => item.id === m.chapterId)
+        : selected.length === 1
+          ? selected[0]
+          : undefined;
+      if (
+        !source?.acceptedRevisionId ||
+        source.needsReview ||
+        (m.revisionId && m.revisionId !== source.acceptedRevisionId)
+      )
+        throw new Error("记忆结果引用了未选择或已变化的章节版本。");
+      usedSources.add(source.id);
       add(
         {
           type: "memory",
-          chapterId: chapter.id,
-          revisionId: chapter.acceptedRevisionId,
+          chapterId: source.id,
+          revisionId: source.acceptedRevisionId,
           kind: m.kind,
         },
         "",
         m.content,
       );
+    }
+    if (r.chapterIds && usedSources.size !== selected.length)
+      throw new Error("记忆结果没有覆盖所有选定章节。");
+  } else if (r.kind === "memory_tune") {
+    const allMemories = new Map(
+      d.memories.map((memory) => [memory.id, memory]),
+    );
+    const chapterById = new Map(d.chapters.map((item) => [item.id, item]));
+    const parsed = z
+      .object({
+        changes: z
+          .array(
+            z.discriminatedUnion("type", [
+              z
+                .object({
+                  type: z.literal("add"),
+                  chapterId: z.string().uuid(),
+                  revisionId: z.string().uuid(),
+                  kind: z.enum(memoryKinds),
+                  content: z.string().trim().min(1).max(3000),
+                  reason: z.string().trim().min(1).max(1000),
+                })
+                .strict(),
+              z
+                .object({
+                  type: z.literal("replace"),
+                  memoryIds: z.array(z.string().uuid()).min(1).max(100),
+                  chapterId: z.string().uuid(),
+                  revisionId: z.string().uuid(),
+                  kind: z.enum(memoryKinds),
+                  content: z.string().trim().min(1).max(3000),
+                  reason: z.string().trim().min(1).max(1000),
+                })
+                .strict(),
+              z
+                .object({
+                  type: z.literal("disable"),
+                  memoryIds: z.array(z.string().uuid()).min(1).max(100),
+                  reason: z.string().trim().min(1).max(1000),
+                })
+                .strict(),
+            ]),
+          )
+          .max(200),
+        manualConflicts: z
+          .array(
+            z
+              .object({
+                memoryIds: z.array(z.string().uuid()).min(1).max(100),
+                reason: z.string().trim().min(1).max(1000),
+              })
+              .strict(),
+          )
+          .max(100),
+      })
+      .strict()
+      .parse(cleanJSON(text));
+    const changedIds = new Set<string>();
+    warnings.push(
+      ...parsed.manualConflicts.map((conflict) => {
+        for (const id of conflict.memoryIds) {
+          const memory = allMemories.get(id);
+          if (!memory?.active || !(memory.manual || !memory.chapterId))
+            throw new Error("手工记忆冲突引用无效或已停用。");
+        }
+        return `${conflict.reason}（手工记忆保持启用）`;
+      }),
+    );
+    for (const change of parsed.changes) {
+      const chapter =
+        change.type === "disable"
+          ? undefined
+          : chapterById.get(change.chapterId);
+      if (
+        change.type !== "disable" &&
+        (!chapter ||
+          !chapter.acceptedRevisionId ||
+          chapter.needsReview ||
+          chapter.acceptedRevisionId !== change.revisionId)
+      )
+        throw new Error("调优结果引用了未采用或已变化的章节版本。");
+      if (
+        change.type !== "disable" &&
+        !d.memories.some(
+          (memory) =>
+            memory.active &&
+            memory.chapterId === chapter!.id &&
+            memory.revisionId === change.revisionId,
+        )
+      )
+        throw new Error("调优结果引用了本次输入中不存在的章节记忆来源。");
+      const oldMemories = "memoryIds" in change ? change.memoryIds : [];
+      if (new Set(oldMemories).size !== oldMemories.length)
+        throw new Error("同一记忆不能在单项调优中重复引用。");
+      for (const id of oldMemories) {
+        if (changedIds.has(id)) throw new Error("同一记忆不能被重复调优。");
+        changedIds.add(id);
+        const memory = allMemories.get(id);
+        if (!memory?.active)
+          throw new Error("调优结果引用了不存在或已停用的记忆。");
+        if (memory.manual || !memory.chapterId)
+          throw new Error("手工记忆不能被自动替换或停用。");
+        const source = chapterById.get(memory.chapterId);
+        if (
+          !source ||
+          source.needsReview ||
+          source.acceptedRevisionId !== memory.revisionId
+        )
+          throw new Error("被调整记忆的来源版本已失效。");
+        if (change.type === "replace" && source.position > chapter!.position)
+          throw new Error("替换记忆不能覆盖来源更晚的章节记录。");
+      }
+      if (change.type === "disable") {
+        add(
+          {
+            type: "memory-tune",
+            operation: "disable",
+            memoryIds: change.memoryIds,
+          },
+          oldMemories.map((id) => allMemories.get(id)!.content).join("\n\n"),
+          "停用",
+          undefined,
+          undefined,
+        );
+        changes.at(-1)!.reviewNote = change.reason;
+      } else {
+        const operation = change.type === "add" ? "add" : "replace";
+        add(
+          {
+            type: "memory-tune",
+            operation,
+            memoryIds: oldMemories,
+            chapterId: chapter!.id,
+            revisionId: change.revisionId,
+            kind: change.kind,
+          },
+          oldMemories.map((id) => allMemories.get(id)!.content).join("\n\n"),
+          change.content,
+        );
+        changes.at(-1)!.reviewNote = change.reason;
+      }
+    }
   } else throw new Error("此工具不能生成可写入修改。");
   const keys = changes.map((c) => {
     const t = c.target;
@@ -299,7 +492,8 @@ export function buildChangeSet(
   });
   if (new Set(keys).size !== keys.length)
     throw new Error("同一目标出现重复修改。");
-  if (!changes.length) throw new Error("模型没有返回可审核修改。");
+  if (!changes.length && !warnings?.length)
+    throw new Error("模型没有返回可审核修改。");
   return {
     id: randomUUID(),
     projectId: d.project.id,
@@ -311,6 +505,7 @@ export function buildChangeSet(
     status: "pending",
     title: r.instruction.slice(0, 80) || "创作建议",
     changes,
+    ...(warnings?.length ? { warnings } : {}),
     createdAt: new Date().toISOString(),
   };
 }
@@ -346,8 +541,10 @@ export function applyChangeSet(
         outline: ["blueprint"],
         opening: ["prose"],
         continue: ["prose"],
+        expand: ["prose"],
         polish: ["prose"],
         notes: ["memory"],
+        memory_tune: ["memory-tune"],
         title: ["title"],
       };
     for (const c of set.changes.filter((c) => !c.applied)) {
@@ -367,11 +564,27 @@ export function applyChangeSet(
             {
               opening: "opening",
               continue: "append",
+              expand: "replace",
               polish: "selection",
             } as Record<string, string>
           )[set.kind]
       )
         throw new Error("正文写入动作与工具不匹配。");
+      if (
+        c.target.type === "memory-tune" &&
+        ((c.target.operation === "disable" && !c.target.memoryIds.length) ||
+          (c.target.operation === "add" &&
+            (c.target.memoryIds.length !== 0 ||
+              !c.target.chapterId ||
+              !c.target.revisionId ||
+              !c.target.kind)) ||
+          (c.target.operation === "replace" &&
+            (c.target.memoryIds.length === 0 ||
+              !c.target.chapterId ||
+              !c.target.revisionId ||
+              !c.target.kind)))
+      )
+        throw new Error("记忆调优目标不完整。");
       if (c.targetBase !== fingerprint(currentTarget(d, c.target)))
         throw new Error("原目标已变化，请重新生成，避免覆盖后来的编辑。");
       if (
@@ -453,6 +666,8 @@ export function applyChangeSet(
           repo.updateChapter(ch.id, {
             document: appendDocument(ch.document, c.after),
           });
+        else if (t.operation === "replace")
+          repo.updateChapter(ch.id, { document: textToDocument(c.after) });
         else {
           if (!t.selection) throw new Error("缺少原选区。");
           repo.updateChapter(ch.id, {
@@ -515,6 +730,51 @@ export function applyChangeSet(
           d.chapters.map((c) => c.id),
         );
         repo.updateProject(projectId, { blueprint: { nodes } });
+      } else if (t.type === "memory-tune") {
+        if (t.operation !== "add") {
+          for (const memoryId of t.memoryIds) {
+            const memory = repo
+              .getDetail(projectId)
+              .memories.find((item) => item.id === memoryId);
+            if (!memory || !memory.active || memory.manual || !memory.chapterId)
+              throw new Error("待调整记忆已停用或不属于章节记忆。");
+            repo.db
+              .prepare(
+                "UPDATE memories SET active = 0, payload = ? WHERE id = ?",
+              )
+              .run(JSON.stringify({ ...memory, active: false }), memory.id);
+          }
+        }
+        if (t.operation !== "disable") {
+          const ch = repo.getChapter(t.chapterId!);
+          if (
+            ch.projectId !== projectId ||
+            ch.acceptedRevisionId !== t.revisionId ||
+            ch.needsReview
+          )
+            throw new Error("记忆来源版本已变化。");
+          const memory = {
+            id: randomUUID(),
+            projectId,
+            chapterId: ch.id,
+            revisionId: t.revisionId!,
+            kind: t.kind!,
+            content: c.after,
+            manual: false,
+            active: true,
+            createdAt: new Date().toISOString(),
+          };
+          repo.db
+            .prepare("INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?)")
+            .run(
+              memory.id,
+              projectId,
+              ch.id,
+              memory.revisionId,
+              1,
+              JSON.stringify(memory),
+            );
+        }
       } else {
         const ch = repo.getChapter(t.chapterId);
         if (

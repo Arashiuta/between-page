@@ -27,6 +27,16 @@ import { selectionText } from "./document-edit";
 import { outlineLevels, validateBlueprint } from "../shared/blueprint";
 import { automaticDirectionKey, saveDirections } from "./exploration";
 const copy = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+type ConversationDraft = {
+  conversation: CreationConversation;
+  turns: CreationTurn[];
+};
+const drafts = new WeakMap<StoryRepository, Map<string, ConversationDraft>>();
+function draftMap(repo: StoryRepository) {
+  let map = drafts.get(repo);
+  if (!map) drafts.set(repo, (map = new Map()));
+  return map;
+}
 const json = (s: string) =>
   JSON.parse(
     s
@@ -48,6 +58,19 @@ export function validateRequest(repo: StoryRepository, r: TaskRequest) {
     throw new Error("当前章已有正文，请新建空章开篇，或使用续写、选区打磨。");
   if (r.kind === "continue" && !chapter?.content.trim())
     throw new Error("当前章为空，请先使用开篇。");
+  if (r.kind === "expand" && !chapter?.content.trim())
+    throw new Error("当前章为空，暂时无法扩写。");
+  if (r.kind === "notes") {
+    const ids = r.chapterIds ?? (r.chapterId ? [r.chapterId] : []);
+    if (
+      !ids.length ||
+      ids.some((chapterId) => {
+        const selected = d.chapters.find((item) => item.id === chapterId);
+        return !selected?.acceptedRevisionId || selected.needsReview;
+      })
+    )
+      throw new Error("请选择已采用且已复核的章节整理记忆。");
+  }
   if (
     r.kind === "polish" &&
     (!chapter ||
@@ -77,7 +100,7 @@ export function validateRequest(repo: StoryRepository, r: TaskRequest) {
       );
       if (
         !set ||
-        !["opening", "continue"].includes(set.kind) ||
+        set.kind !== "opening" ||
         !set.changes.some(
           (c) =>
             c.applied &&
@@ -85,7 +108,7 @@ export function validateRequest(repo: StoryRepository, r: TaskRequest) {
             c.target.chapterId === r.chapterId,
         )
       )
-        throw new Error("自动走向必须来源于已审核写入的开篇或续写。");
+        throw new Error("自动走向必须来源于已审核写入的开篇。");
     }
   }
   if (r.kind === "blueprint" || r.kind === "outline") {
@@ -137,11 +160,6 @@ export function validateRequest(repo: StoryRepository, r: TaskRequest) {
     )
       throw new Error("检查范围为空、重复或包含其他作品的章节。");
   }
-  if (
-    r.kind === "notes" &&
-    (!chapter?.acceptedRevisionId || chapter.needsReview)
-  )
-    throw new Error("请先采用或复核本章。");
   return d;
 }
 export function getConversation(
@@ -149,6 +167,12 @@ export function getConversation(
   pid: string,
   id: string,
 ): CreationConversation {
+  const draft = draftMap(repo).get(id);
+  if (draft) {
+    if (draft.conversation.projectId !== pid)
+      throw new Error("对话不存在或不属于当前故事。");
+    return draft.conversation;
+  }
   const row = repo.db
     .prepare(
       "SELECT payload FROM creation_conversations WHERE id = ? AND project_id = ?",
@@ -162,6 +186,14 @@ export function getTurn(
   pid: string,
   id: string,
 ): CreationTurn {
+  for (const draft of draftMap(repo).values()) {
+    const turn = draft.turns.find((item) => item.id === id);
+    if (turn) {
+      if (turn.projectId !== pid)
+        throw new Error("结果不存在或不属于当前故事。");
+      return turn;
+    }
+  }
   const row = repo.db
     .prepare(
       "SELECT payload FROM creation_turns WHERE id = ? AND project_id = ?",
@@ -176,6 +208,8 @@ export function conversationDetail(
   id: string,
 ) {
   const conversation = getConversation(repo, pid, id);
+  const draft = draftMap(repo).get(id);
+  if (draft) return { conversation, turns: draft.turns };
   const turns = (
     repo.db
       .prepare(
@@ -186,6 +220,7 @@ export function conversationDetail(
   return { conversation, turns };
 }
 function writeConversation(repo: StoryRepository, c: CreationConversation) {
+  if (draftMap(repo).has(c.id)) return;
   repo.db
     .prepare(
       "INSERT INTO creation_conversations VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
@@ -193,11 +228,21 @@ function writeConversation(repo: StoryRepository, c: CreationConversation) {
     .run(c.id, c.projectId, JSON.stringify(c));
 }
 function writeTurn(repo: StoryRepository, t: CreationTurn) {
+  const draft = draftMap(repo).get(t.conversationId);
+  if (draft) {
+    const index = draft.turns.findIndex((item) => item.id === t.id);
+    if (index < 0) draft.turns.push(t);
+    else draft.turns[index] = t;
+    return;
+  }
   repo.db
     .prepare(
       "INSERT INTO creation_turns VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
     )
     .run(t.id, t.conversationId, t.projectId, JSON.stringify(t));
+}
+function isDraft(repo: StoryRepository, id: string) {
+  return draftMap(repo).has(id);
 }
 export function createConversation(
   repo: StoryRepository,
@@ -213,11 +258,13 @@ export function createConversation(
     title: toolNames[r.kind] + " · " + (r.instruction.slice(0, 30) || "新对话"),
     request: copy(r),
     selectedTurnId: null,
+    archived: false,
+    saved: false,
     createdAt: new Date().toISOString(),
   };
   delete c.request.conversationId;
   delete c.request.parentTurnId;
-  writeConversation(repo, c);
+  draftMap(repo).set(c.id, { conversation: c, turns: [] });
   return c;
 }
 export function listConversations(repo: StoryRepository, pid: string) {
@@ -228,12 +275,22 @@ export function listConversations(repo: StoryRepository, pid: string) {
         "SELECT payload FROM creation_conversations WHERE project_id = ? ORDER BY rowid DESC",
       )
       .all(pid) as { payload: string }[]
-  ).map((r) => JSON.parse(r.payload) as CreationConversation);
+  ).map((r) => ({
+    ...(JSON.parse(r.payload) as CreationConversation),
+    saved: true,
+  }));
+}
+export function listConversationDrafts(repo: StoryRepository, pid: string) {
+  repo.getProject(pid);
+  return [...draftMap(repo).values()]
+    .map((draft) => draft.conversation)
+    .filter((conversation) => conversation.projectId === pid)
+    .reverse();
 }
 function contract(r: TaskRequest) {
   if (r.kind === "settings")
     return (
-      '只输出JSON：{"changes":[{"type":"card","cardId":"已有资料ID，新增则省略","kind":"character|world|inspiration","name":"资料名","field":"description|constraints|section","sectionId":"已有分区ID，新增则省略","title":"分区标题","content":"该目标的完整新内容"}]}。也可使用{"type":"project","field":"world|style","content":"完整内容"}修改世界规则或叙事偏好。禁止额外设定修改。不得返回未知字段。同一目标只出现一次。' +
+      '只输出JSON：{"changes":[{"type":"card","cardId":"已有资料ID，新增则省略","kind":"character|world|inspiration","name":"资料名","field":"description|constraints|section","sectionId":"已有分区ID，新增则省略","title":"分区标题","content":"该目标的完整新内容"}]}。也可使用{"type":"project","field":"style","content":"叙事偏好的完整内容"}修改叙事偏好。世界规则请放入世界资料，不修改旧世界规则字段。禁止额外设定修改。不得返回未知字段。同一目标只出现一次。' +
       (r.cardId ? "只修改资料：" + r.cardId : "")
     );
   if (r.kind === "blueprint")
@@ -243,7 +300,9 @@ function contract(r: TaskRequest) {
   if (r.kind === "directions")
     return `生成恰好 ${r.count} 个不同的下一章剧情走向。只输出JSON：{"options":[{"title":"简短标题","content":"具体的剧情说明"}]}。每项都须遵守全部额外设定、资料和有效记忆，衔接当前正文，不输出正文，不将走向写成已发生事实。`;
   if (r.kind === "notes")
-    return '只输出JSON：{"records":[{"kind":"summary|fact|state|relationship|knowledge|foreshadow","content":"自足事实记录"}]}。最多24条。';
+    return '只输出JSON：{"records":[{"kind":"summary","content":"自足、精炼的章节摘要"}]}。只根据本次指定的已采用章节提取已发生事实。';
+  if (r.kind === "memory_tune")
+    return '只输出JSON：{"changes":[{"type":"add","chapterId":"来源章节ID","revisionId":"采用版本ID","kind":"fact|state|relationship|knowledge|foreshadow|summary","content":"新记忆内容","reason":"调整原因"},{"type":"replace","memoryIds":["需替换的较早章节记忆ID"],"chapterId":"较新章节ID","revisionId":"该章采用版本ID","kind":"fact|state|relationship|knowledge|foreshadow|summary","content":"替换后内容","reason":"较新事实或闭环原因"},{"type":"disable","memoryIds":["不再需要的章节记忆ID"],"reason":"停用原因"}],"manualConflicts":[{"memoryIds":["冲突的手工记忆ID"],"reason":"冲突说明"}]}。章节记忆按章节顺序处理；手工记忆只能出现在 manualConflicts 中，不得替换或停用。';
   if (r.kind === "polish") return "本次打磨方向：" + r.aspect;
   return "";
 }
@@ -567,16 +626,82 @@ export async function runCreationTask(
   };
   try {
     let result: TaskResult;
-    const preview = await prepareTaskPreview(repo, r, opts);
-    if (basis(repo, r.projectId) !== initialBasis)
-      throw new Error("构建请求时基础资料发生变化，请重新生成。");
-    t.sourceSnapshot = [preview];
-    writeTurn(repo, t);
-    if (r.kind === "check")
-      result = await checkStory(d, r, preview, opts, delta);
-    else {
-      const raw = await opts.generate(preview.messages, delta);
+    let preview: TaskPreview | undefined;
+    let raw: string;
+    if (r.kind === "notes" && r.chapterIds) {
+      const records: {
+        chapterId: string;
+        revisionId: string;
+        kind: "summary";
+        content: string;
+      }[] = [];
+      t.sourceSnapshot = [];
+      for (const chapterId of r.chapterIds) {
+        if (opts.signal.aborted) throw new Error("生成已停止。");
+        const chapter = d.chapters.find((item) => item.id === chapterId)!;
+        const singleRequest: TaskRequest = {
+          ...r,
+          chapterId,
+          instruction:
+            r.instruction + "\n只返回一条本章摘要，不要提取其他类型的记忆。",
+        };
+        delete (singleRequest as { chapterIds?: string[] }).chapterIds;
+        preview = await buildContext(
+          repo,
+          singleRequest,
+          opts,
+          contract(singleRequest),
+        );
+        if (basis(repo, r.projectId) !== initialBasis)
+          throw new Error("构建请求时基础资料发生变化，请重新生成。");
+        t.sourceSnapshot.push(preview);
+        writeTurn(repo, t);
+        const response = await opts.generate(preview.messages, delta);
+        if (opts.signal.aborted) throw new Error("生成已停止。");
+        const parsed = z
+          .object({
+            records: z
+              .array(
+                z
+                  .object({
+                    kind: z.literal("summary"),
+                    content: z.string().trim().min(1).max(3000),
+                  })
+                  .strict(),
+              )
+              .length(1),
+          })
+          .strict()
+          .parse(json(response));
+        records.push({
+          chapterId,
+          revisionId: chapter.acceptedRevisionId!,
+          kind: "summary",
+          content: parsed.records[0].content,
+        });
+      }
+      raw = JSON.stringify({ records });
+    } else {
+      preview = await prepareTaskPreview(repo, r, opts);
+      if (basis(repo, r.projectId) !== initialBasis)
+        throw new Error("构建请求时基础资料发生变化，请重新生成。");
+      t.sourceSnapshot = [preview];
+      writeTurn(repo, t);
+      if (r.kind === "check") {
+        result = await checkStory(d, r, preview, opts, delta);
+        if (opts.signal.aborted) throw new Error("生成已停止。");
+        t.result = result;
+        t.status = "complete";
+        writeTurn(repo, t);
+        return { conversationId: c.id, turnId: t.id, result };
+      }
+      raw = await opts.generate(preview.messages, delta);
+    }
+    if (r.kind !== "notes" || !r.chapterIds) {
       if (opts.signal.aborted) throw new Error("生成已停止。");
+      if (!raw.trim()) throw new Error("模型没有返回内容。");
+    }
+    {
       if (!raw.trim()) throw new Error("模型没有返回内容。");
       if (r.kind === "brainstorm") result = { type: "chat", text: raw };
       else if (r.kind === "prompt")
@@ -614,7 +739,7 @@ export async function runCreationTask(
             basis: initialExplorationBasis,
             model: opts.model,
             turnId: t.id,
-            preview,
+            preview: preview!,
           });
           writeTurn(repo, t);
         })();
@@ -656,6 +781,42 @@ export function conversationHandlers(
   return {
     "conversation:list": (p) =>
       listConversations(repo, z.string().uuid().parse(p)),
+    "conversation:drafts:list": (p) =>
+      listConversationDrafts(repo, z.string().uuid().parse(p)),
+    "conversation:save": (p) => {
+      const input = z
+        .object({
+          projectId: z.string().uuid(),
+          id: z.string().uuid(),
+        })
+        .strict()
+        .parse(p);
+      const c = getConversation(repo, input.projectId, input.id);
+      const detail = conversationDetail(repo, c.projectId, c.id);
+      if (detail.turns.some((turn) => turn.status === "generating"))
+        throw new Error("对话仍在生成，请完成或停止后再保存。");
+      if (isDraft(repo, c.id)) {
+        const saved = { ...c, saved: true, archived: false };
+        repo.db.transaction(() => {
+          repo.db
+            .prepare("INSERT INTO creation_conversations VALUES (?, ?, ?)")
+            .run(saved.id, saved.projectId, JSON.stringify(saved));
+          const insertTurn = repo.db.prepare(
+            "INSERT INTO creation_turns VALUES (?, ?, ?, ?)",
+          );
+          for (const turn of detail.turns)
+            insertTurn.run(
+              turn.id,
+              turn.conversationId,
+              turn.projectId,
+              JSON.stringify(turn),
+            );
+        })();
+        draftMap(repo).delete(c.id);
+        return saved;
+      }
+      return c;
+    },
     "conversation:get": (p) =>
       conversationDetail(
         repo,
@@ -679,21 +840,31 @@ export function conversationHandlers(
       return c;
     },
     "conversation:delete": (p) =>
-      repo.db.transaction(() => {
-        const c = getConversation(repo, p.projectId, p.id);
+      (() => {
+        const input = z
+          .object({ projectId: z.string().uuid(), id: z.string().uuid() })
+          .strict()
+          .parse(p);
+        const c = getConversation(repo, input.projectId, input.id);
         if (
           conversationDetail(repo, c.projectId, c.id).turns.some(
             (t) => t.status === "generating",
           )
         )
           throw new Error("对话仍在生成，请先停止生成。");
-        repo.db
-          .prepare("DELETE FROM creation_turns WHERE conversation_id = ?")
-          .run(c.id);
-        repo.db
-          .prepare("DELETE FROM creation_conversations WHERE id = ?")
-          .run(c.id);
-        return true;
+        if (isDraft(repo, c.id)) {
+          draftMap(repo).delete(c.id);
+          return true;
+        }
+        return repo.db.transaction(() => {
+          repo.db
+            .prepare("DELETE FROM creation_turns WHERE conversation_id = ?")
+            .run(c.id);
+          repo.db
+            .prepare("DELETE FROM creation_conversations WHERE id = ?")
+            .run(c.id);
+          return true;
+        })();
       })(),
   };
 }

@@ -61,12 +61,14 @@ export const useWorkspace = defineStore("workspace", () => {
     outlineTarget = ref<BlueprintTarget>({ level: "synopsis", count: 1 }),
     planningNodeId = ref(""),
     settingCardId = ref<string>(),
+    notesChapterIds = ref<string[]>([]),
     checkScope = ref<"current" | "chapters" | "book">("current"),
     checkChapterIds = ref<string[]>([]),
     checkAspect = ref<CheckAspect>("continuity"),
     checkCharacter = ref(""),
     polishAspect = ref<PolishAspect>("expression");
   const conversations = ref<CreationConversation[]>([]),
+    conversationDrafts = ref<CreationConversation[]>([]),
     conversationId = ref(""),
     turns = ref<CreationTurn[]>([]),
     selectedTurnId = ref(""),
@@ -76,8 +78,10 @@ export const useWorkspace = defineStore("workspace", () => {
   const selectedTurn = computed(() =>
       turns.value.find((t) => t.id === selectedTurnId.value),
     ),
-    activeConversation = computed(() =>
-      conversations.value.find((c) => c.id === conversationId.value),
+    activeConversation = computed(
+      () =>
+        conversationDrafts.value.find((c) => c.id === conversationId.value) ??
+        conversations.value.find((c) => c.id === conversationId.value),
     );
   const closePrompt = ref(false),
     closingWindow = ref(false),
@@ -300,6 +304,16 @@ export const useWorkspace = defineStore("workspace", () => {
     output.value = "";
     taskError.value = "";
   }
+  async function refreshConversations(pid = detail.value?.project.id) {
+    if (!pid) return;
+    const [saved, drafts] = await Promise.all([
+      api<CreationConversation[]>("conversation:list", pid),
+      api<CreationConversation[]>("conversation:drafts:list", pid),
+    ]);
+    if (detail.value?.project.id !== pid) return;
+    conversations.value = saved;
+    conversationDrafts.value = drafts;
+  }
   async function openProject(id: string) {
     const ticket = ++projectLoad;
     if (directionsBusy.value) {
@@ -319,12 +333,14 @@ export const useWorkspace = defineStore("workspace", () => {
     planningNodeId.value = "";
     directionsError.value = "";
     clearConversation();
-    const [cs, sets] = await Promise.all([
+    const [cs, ds, sets] = await Promise.all([
       api<CreationConversation[]>("conversation:list", id),
+      api<CreationConversation[]>("conversation:drafts:list", id),
       api<ChangeSet[]>("changes:list", id),
     ]);
     if (ticket !== projectLoad) return;
     conversations.value = cs;
+    conversationDrafts.value = ds;
     changeSets.value = sets;
     taskKind.value = "brainstorm";
     taskModel.value = "";
@@ -383,7 +399,7 @@ export const useWorkspace = defineStore("workspace", () => {
       selection.value = saved.selection ?? null;
       if (
         saved.conversationId &&
-        conversations.value.some(
+        conversationDrafts.value.some(
           (c) => c.id === saved.conversationId && c.kind !== "settings",
         )
       )
@@ -472,12 +488,7 @@ export const useWorkspace = defineStore("workspace", () => {
         r = { ...base, kind: "brainstorm" };
         break;
       case "settings":
-        r = {
-          ...base,
-          kind: "settings",
-          ...(settingCardId.value ? { cardId: settingCardId.value } : {}),
-        };
-        break;
+        throw new Error("旧版设定对话仅供查看，无法继续生成。");
       case "blueprint":
       case "outline": {
         const t =
@@ -532,6 +543,19 @@ export const useWorkspace = defineStore("workspace", () => {
           aspect: polishAspect.value,
         };
         break;
+      case "notes": {
+        const chapterIds = notesChapterIds.value.length
+          ? [...notesChapterIds.value]
+          : cid
+            ? [cid]
+            : [];
+        if (!chapterIds.length) throw new Error("请选择要整理记忆的章节。");
+        r = { ...base, kind: "notes", chapterIds };
+        break;
+      }
+      case "memory_tune":
+        r = { ...base, kind: "memory_tune" };
+        break;
       case "prompt":
         r = {
           ...base,
@@ -560,11 +584,15 @@ export const useWorkspace = defineStore("workspace", () => {
       clearConversation();
       return;
     }
-    const c = conversations.value.find(
+    const c = conversationDrafts.value.find(
       (c) =>
         c.key === requestKey(request) && c.mode === detail.value!.project.mode,
     );
-    if (activeConversation.value?.key === requestKey(request)) return;
+    if (
+      activeConversation.value?.saved !== true &&
+      activeConversation.value?.key === requestKey(request)
+    )
+      return;
     clearConversation();
     if (c) await openConversation(c.id, false);
   }
@@ -599,12 +627,16 @@ export const useWorkspace = defineStore("workspace", () => {
     if (d.conversation.mode !== detail.value.project.mode)
       throw new Error("请切换到此对话对应的创作模式。");
     const r = d.conversation.request;
-    if (r.kind === "settings")
-      throw new Error("完善设定工具已移除，请在资料编辑中使用 AI 提炼。");
     if (adjust) {
       taskKind.value = r.kind;
       taskModel.value = r.model ?? "";
       if ("chapterId" in r && r.chapterId) chapterId.value = r.chapterId;
+      if (r.kind === "notes") {
+        notesChapterIds.value =
+          r.chapterIds ?? (r.chapterId ? [r.chapterId] : []);
+        if (notesChapterIds.value[0])
+          chapterId.value = notesChapterIds.value[0];
+      }
       if (r.kind === "blueprint") blueprintTarget.value = r.target;
       if (r.kind === "outline") outlineTarget.value = r.target;
       if (r.kind === "polish") {
@@ -624,8 +656,7 @@ export const useWorkspace = defineStore("workspace", () => {
     turns.value = d.turns;
     selectedTurnId.value = d.conversation.selectedTurnId ?? "";
     result.value = selectedTurn.value?.result ?? null;
-    output.value =
-      selectedTurn.value?.result?.text ?? selectedTurn.value?.rawResponse ?? "";
+    output.value = selectedTurn.value?.result?.text ?? "";
     taskError.value = selectedTurn.value?.error ?? "";
   }
   async function selectVersion(id: string) {
@@ -638,29 +669,39 @@ export const useWorkspace = defineStore("workspace", () => {
     await openConversation(conversationId.value, false);
     scratch();
   }
-  async function renameConversation(title: string) {
-    if (!detail.value) return;
+  async function renameConversation(title: string, id = conversationId.value) {
+    if (!detail.value || !id) return;
     await api("conversation:rename", {
       projectId: detail.value.project.id,
-      id: conversationId.value,
+      id,
       title,
     });
-    conversations.value = await api(
-      "conversation:list",
-      detail.value.project.id,
-    );
+    await refreshConversations();
   }
-  async function deleteConversation() {
+  async function saveConversation(id = conversationId.value) {
+    if (!detail.value || !id) return;
+    await api("conversation:save", {
+      projectId: detail.value.project.id,
+      id,
+    });
+    await refreshConversations();
+    notify("对话已保存。");
+  }
+  async function deleteConversationById(id: string) {
     if (!detail.value) return;
     await api("conversation:delete", {
       projectId: detail.value.project.id,
-      id: conversationId.value,
+      id,
     });
-    clearConversation();
-    conversations.value = await api(
-      "conversation:list",
-      detail.value.project.id,
-    );
+    if (id === conversationId.value) {
+      clearConversation();
+      scratch();
+    }
+    await refreshConversations();
+  }
+  async function deleteConversation() {
+    if (!detail.value) return;
+    await deleteConversationById(conversationId.value);
     scratch();
   }
   async function chooseTool(kind: TaskKind) {
@@ -696,7 +737,7 @@ export const useWorkspace = defineStore("workspace", () => {
         result: TaskResult;
       }>("ai:run", r);
       if (detail.value?.project.id !== generationProjectId) return;
-      conversations.value = await api("conversation:list", generationProjectId);
+      await refreshConversations(generationProjectId);
       await openConversation(value.conversationId, false);
       await refreshProject();
     } catch (e) {
@@ -705,9 +746,14 @@ export const useWorkspace = defineStore("workspace", () => {
         "conversation:list",
         generationProjectId,
       ).catch(() => []);
+      const draftList = await api<CreationConversation[]>(
+        "conversation:drafts:list",
+        generationProjectId,
+      ).catch(() => []);
       if (detail.value?.project.id === generationProjectId) {
         conversations.value = list;
-        const c = list.find((c) => c.key === attemptedKey);
+        conversationDrafts.value = draftList;
+        const c = [...draftList, ...list].find((c) => c.key === attemptedKey);
         if (c) await openConversation(c.id, false).catch(() => {});
         taskError.value = error;
       }
@@ -730,7 +776,7 @@ export const useWorkspace = defineStore("workspace", () => {
     const pid = detail.value.project.id;
     const original = changeSets.value.find((s) => s.id === id);
     const directionChapterIds =
-      original && ["opening", "continue"].includes(original.kind)
+      original && original.kind === "opening"
         ? original.changes
             .filter(
               (c) =>
@@ -979,6 +1025,8 @@ export const useWorkspace = defineStore("workspace", () => {
     checkCharacter,
     polishAspect,
     conversations,
+    conversationDrafts,
+    notesChapterIds,
     conversationId,
     turns,
     selectedTurnId,
@@ -1008,11 +1056,13 @@ export const useWorkspace = defineStore("workspace", () => {
     deleteChapter,
     adopt,
     currentTaskRequest,
-    restoreConversation,
     newConversation,
     openConversation,
     selectVersion,
     renameConversation,
+    saveConversation,
+    restoreConversation,
+    deleteConversationById,
     deleteConversation,
     chooseTool,
     runTask,

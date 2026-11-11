@@ -11,6 +11,7 @@ import {
   type TreeDropInfo,
   type TreeDragInfo,
 } from "naive-ui";
+import { ArrowDown, ArrowUp } from "lucide-vue-next";
 import { useWorkspace } from "../stores/workspace";
 import {
   blueprintLabels,
@@ -126,10 +127,14 @@ function nodeProps({ option }: { option: TreeOption }) {
     return offset < rect.height / 2 ? "before" : "after";
   };
   return {
-    class:
+    class: [
+      `outline-level-${nodes.value.find((node) => node.id === key)?.level ?? "unknown"}`,
       outlineDrop.value?.id === key
         ? "outline-drop-" + outlineDrop.value.position
         : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
     onDragover: (event: DragEvent) => {
       event.stopPropagation();
       const position = positionAt(event);
@@ -398,6 +403,7 @@ async function restore(id: string) {
         >
         <NTree
           v-if="domain === 'outline'"
+          class="outline-tree"
           :data="tree"
           block-line
           selectable
@@ -430,7 +436,7 @@ async function restore(id: string) {
         </p>
         <template v-if="domain === 'blueprint'">
           <div
-            v-for="n in ordered"
+            v-for="(n, index) in ordered"
             :key="n.id"
             :class="['blueprint-nav-row', { active: selected === n.id }]"
             :style="{
@@ -438,16 +444,29 @@ async function restore(id: string) {
                 n.level === 'scene' ? '28px' : n.parentId ? '16px' : '0',
             }"
           >
-            <button @click="select(n.id)">
+            <button
+              class="blueprint-nav-select"
+              :aria-current="selected === n.id ? 'true' : undefined"
+              @click="select(n.id)"
+            >
               <small>{{ blueprintLabels[n.level] }}</small
-              >{{ n.title }}</button
+              ><span>{{ n.title }}</span></button
             ><button
+              class="blueprint-nav-move"
               aria-label="上移"
+              title="上移"
+              :disabled="store.busy || index === 0"
               @click="store.safe(() => move(n.id, -1))"
             >
-              ↑</button
-            ><button aria-label="下移" @click="store.safe(() => move(n.id, 1))">
-              ↓
+              <ArrowUp :size="14" /></button
+            ><button
+              class="blueprint-nav-move"
+              aria-label="下移"
+              title="下移"
+              :disabled="store.busy || index === ordered.length - 1"
+              @click="store.safe(() => move(n.id, 1))"
+            >
+              <ArrowDown :size="14" />
             </button>
           </div>
         </template>
@@ -617,7 +636,92 @@ async function restore(id: string) {
   color: var(--muted);
 }
 .blueprint-nav-row {
+  position: relative;
+  min-height: 42px;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid transparent;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+.blueprint-nav-row:hover {
   border-color: var(--border);
+  background: var(--surface-muted);
+}
+.blueprint-nav-row.active,
+.blueprint-nav-row.active:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.blueprint-nav-row button.blueprint-nav-select {
+  display: block;
+  min-height: 36px;
+  min-width: 0;
+  padding: 4px 7px;
+  border-radius: 5px;
+}
+.blueprint-nav-row button.blueprint-nav-select span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.blueprint-nav-row button.blueprint-nav-select:focus-visible,
+.blueprint-nav-row button.blueprint-nav-move:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.blueprint-nav-row button.blueprint-nav-move {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.blueprint-nav-row button.blueprint-nav-move:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--surface);
+}
+.blueprint-nav-row button.blueprint-nav-move:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.outline-nav :deep(.n-tree-node) {
+  min-height: 40px;
+  margin: 2px 0;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.outline-nav :deep(.n-tree-node-content) {
+  min-width: 0;
+  min-height: 38px;
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+.outline-nav :deep(.n-tree-node-content:hover) {
+  background: var(--surface-muted);
+}
+.outline-nav :deep(.n-tree-node--selected .n-tree-node-content) {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+.outline-nav :deep(.n-tree-node:focus-visible .n-tree-node-content) {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.outline-nav :deep(.n-tree-node-content__text) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.outline-nav :deep(.outline-level-volume .n-tree-node-content__text) {
+  font-weight: 600;
+}
+.outline-nav :deep(.outline-level-scene .n-tree-node-content__text) {
+  color: var(--muted);
 }
 @media (max-width: 1280px) {
   .blueprint-layout {
@@ -634,7 +738,10 @@ async function restore(id: string) {
   .blueprint-nav-row {
     min-width: 140px;
     max-width: 100%;
-    border: 1px solid var(--border);
+  }
+  .outline-nav :deep(.n-tree) {
+    max-height: 42vh;
+    overflow: auto;
   }
 }
 .outline-layout {

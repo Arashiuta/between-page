@@ -140,6 +140,75 @@ export async function buildContext(
     p = d.project;
   if (r.mode !== p.mode)
     throw new Error("创作模式已变化，请切换到当前模式的对话。");
+  if (r.kind === "memory_tune") {
+    const byId = new Map(d.chapters.map((chapter) => [chapter.id, chapter]));
+    const memories = d.memories
+      .filter((memory) => memory.active)
+      .map((memory) => {
+        const chapter = memory.chapterId
+          ? byId.get(memory.chapterId)
+          : undefined;
+        if (
+          memory.chapterId &&
+          (!chapter ||
+            chapter.needsReview ||
+            !chapter.acceptedRevisionId ||
+            chapter.acceptedRevisionId !== memory.revisionId)
+        )
+          throw new Error(
+            "启用的章节记忆包含已失效的来源版本，请先停用或重新整理后再调优。",
+          );
+        return {
+          id: memory.id,
+          manual: memory.manual || !memory.chapterId,
+          chapterId: memory.chapterId,
+          chapterPosition: chapter?.position ?? null,
+          chapterTitle: chapter?.title ?? null,
+          revisionId: memory.revisionId,
+          kind: memory.kind,
+          content: memory.content,
+          createdAt: memory.createdAt,
+        };
+      })
+      .sort(
+        (a, b) =>
+          (a.chapterPosition ?? Number.MAX_SAFE_INTEGER) -
+            (b.chapterPosition ?? Number.MAX_SAFE_INTEGER) ||
+          a.createdAt.localeCompare(b.createdAt),
+      );
+    const system = [
+      rolePrompt(roleSettings(repo), r.kind),
+      modeTools[p.mode].description,
+      modeTools[p.mode].prompts[r.kind],
+      creationPolicy(p),
+      extra,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const payload = JSON.stringify(memories);
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: `【本作品全部启用记忆，已按章节顺序排列】\n${payload}\n\n本次要求：${r.instruction || "分析冲突、后续覆盖和已闭环伏笔。"}`,
+      },
+    ];
+    const estimated = ensureBudget(messages, opts.capabilities);
+    return {
+      model: opts.model,
+      messages,
+      sources: [
+        {
+          title: `启用记忆（${memories.length} 条）`,
+          priority: "本次任务唯一数据来源",
+          characters: payload.length,
+        },
+      ],
+      images: [],
+      omitted: [],
+      estimatedTokens: estimated,
+    };
+  }
   const sources: TaskPreview["sources"] = [],
     blocks: string[] = [];
   const add = (title: string, priority: string, text: string) => {
@@ -183,7 +252,6 @@ export async function buildContext(
         .join("\n"),
     );
   }
-  add("世界规则", "2 世界与人物", p.world);
   add("叙事偏好", "2 世界与人物", p.style);
   for (const c of d.cards) {
     add(`资料/${c.name} [${c.id}] 概述`, "2 世界与人物", c.description);
@@ -305,7 +373,7 @@ export async function buildContext(
       );
     if (r.kind === "notes") {
       if (!chapter?.acceptedRevisionId || chapter.needsReview)
-        throw new Error("请先采用或复核当前章，再整理记忆。");
+        throw new Error("请先采用或复核所选章节，再整理记忆。");
       add(
         "唯一记忆来源（已采用版本）",
         "3 事实",

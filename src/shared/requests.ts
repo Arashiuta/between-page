@@ -64,11 +64,29 @@ export const requestSchema = z
         triggerChangeSetId: z.string().uuid().optional(),
       })
       .strict(),
-    ...(["opening", "continue", "notes", "title"] as const).map((kind) =>
+    ...(["opening", "continue", "expand", "title"] as const).map((kind) =>
       base
         .extend({ kind: z.literal(kind), chapterId: z.string().uuid() })
         .strict(),
     ),
+    base
+      .extend({
+        kind: z.literal("notes"),
+        chapterId: z.string().uuid().optional(),
+        chapterIds: z.array(z.string().uuid()).min(1).max(50).optional(),
+      })
+      .strict()
+      .refine((r) => !!r.chapterId !== !!r.chapterIds, {
+        message: "记忆整理需指定单章或多章，不能同时指定。",
+      })
+      .refine(
+        (r) =>
+          !r.chapterIds || new Set(r.chapterIds).size === r.chapterIds.length,
+        {
+          message: "记忆整理章节不能重复。",
+        },
+      ),
+    base.extend({ kind: z.literal("memory_tune") }).strict(),
     base
       .extend({
         kind: z.literal("polish"),

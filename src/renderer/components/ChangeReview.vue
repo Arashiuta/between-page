@@ -38,7 +38,13 @@ function label(c: ProposedChange) {
               : "替换原选区"
           : t.type === "title"
             ? "章节名称"
-            : "新增记忆";
+            : t.type === "memory-tune"
+              ? t.operation === "add"
+                ? "新增记忆"
+                : t.operation === "replace"
+                  ? "替换旧记忆"
+                  : "停用旧记忆"
+              : "新增章节记忆";
 }
 watch(
   () => store.reviewingChangeId,
@@ -121,6 +127,10 @@ async function apply() {
       按完整目标审核。编辑建议会同步更新差异；确认后才写入故事，采用前自动保存快照。
     </p>
     <p v-if="error" class="review-error" role="alert">{{ error }}</p>
+    <aside v-if="set?.warnings?.length" class="review-warnings">
+      <strong>手工记忆冲突提示</strong>
+      <p v-for="(warning, index) in set.warnings" :key="index">{{ warning }}</p>
+    </aside>
     <p v-if="legacy" class="field-help">
       旧版分层规划建议保留查看，请在大纲规划中重新生成后采用。
     </p>
@@ -141,7 +151,13 @@ async function apply() {
         :before="c.beforeTitle ?? ''"
         :after="titles[c.id] ?? c.afterTitle"
       /><DiffText :before="c.before" :after="drafts[c.id] ?? c.after" />
-      <details v-if="!c.applied">
+      <p v-if="c.reviewNote" class="review-note">{{ c.reviewNote }}</p>
+      <details
+        v-if="
+          !c.applied &&
+          !(c.target.type === 'memory-tune' && c.target.operation === 'disable')
+        "
+      >
         <summary>编辑这一项建议</summary>
         <NInput
           v-if="c.afterTitle !== undefined"
@@ -179,5 +195,20 @@ async function apply() {
 .review-error {
   color: #b42318;
   white-space: pre-wrap;
+}
+.review-warnings {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-left: 3px solid #b7791f;
+  background: #fff7e6;
+  color: #694b13;
+}
+.review-warnings p,
+.review-note {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+.review-note {
+  color: var(--muted);
 }
 </style>

@@ -17,9 +17,11 @@ export const taskKinds = [
   "directions",
   "opening",
   "continue",
+  "expand",
   "polish",
   "check",
   "notes",
+  "memory_tune",
   "prompt",
   "title",
 ] as const;
@@ -281,7 +283,9 @@ export type TaskRequest = RequestBase &
         count: number;
         triggerChangeSetId?: string;
       }
-    | { kind: "opening" | "continue" | "notes" | "title"; chapterId: string }
+    | { kind: "opening" | "continue" | "expand" | "title"; chapterId: string }
+    | { kind: "notes"; chapterId?: string; chapterIds?: string[] }
+    | { kind: "memory_tune" }
     | {
         kind: "polish";
         chapterId: string;
@@ -311,11 +315,19 @@ export type ChangeTarget =
   | {
       type: "prose";
       chapterId: string;
-      operation: "opening" | "append" | "selection";
+      operation: "opening" | "append" | "replace" | "selection";
       selection?: TextSelection;
     }
   | { type: "title"; chapterId: string }
-  | { type: "memory"; chapterId: string; revisionId: string; kind: MemoryKind };
+  | { type: "memory"; chapterId: string; revisionId: string; kind: MemoryKind }
+  | {
+      type: "memory-tune";
+      operation: "add" | "replace" | "disable";
+      memoryIds: string[];
+      chapterId?: string;
+      revisionId?: string;
+      kind?: MemoryKind;
+    };
 export interface ProposedChange {
   id: string;
   target: ChangeTarget;
@@ -325,6 +337,7 @@ export interface ProposedChange {
   afterTitle?: string;
   targetBase: string;
   applied: boolean;
+  reviewNote?: string;
 }
 export interface ChangeSet {
   id: string;
@@ -338,6 +351,7 @@ export interface ChangeSet {
   status: "pending" | "partial" | "applied";
   title: string;
   changes: ProposedChange[];
+  warnings?: string[];
   createdAt: string;
 }
 export interface CheckFinding {
@@ -405,6 +419,8 @@ export interface CreationConversation {
   title: string;
   request: TaskRequest;
   selectedTurnId: string | null;
+  archived?: boolean;
+  saved?: boolean;
   createdAt: string;
 }
 export interface CreationTurn {
