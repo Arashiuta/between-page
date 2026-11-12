@@ -264,28 +264,20 @@ async function run() {
 <template>
   <aside class="studio-workbench">
     <header>
-      <span class="workbench-mark"><Sparkles :size="16" /></span>
+      <span class="workbench-mark">
+        <Sparkles :size="16" />
+      </span>
       <h2>创作工具</h2>
-      <span
-        >{{ mode === "novel" ? "长篇创作" : "自由探索" }} ·
-        {{ model || "未配置模型" }}</span
-      >
+      <span>{{ mode === "novel" ? "长篇创作" : "自由探索" }} ·
+        {{ model || "未配置模型" }}</span>
     </header>
     <nav class="workbench-tabs" role="tablist" aria-label="创作对话">
-      <button
-        role="tab"
-        :aria-selected="panelTab === 'create'"
-        :class="{ active: panelTab === 'create' }"
-        @click="panelTab = 'create'"
-      >
+      <button role="tab" :aria-selected="panelTab === 'create'" :class="{ active: panelTab === 'create' }"
+        @click="panelTab = 'create'">
         创作
       </button>
-      <button
-        role="tab"
-        :aria-selected="panelTab === 'saved'"
-        :class="{ active: panelTab === 'saved' }"
-        @click="panelTab = 'saved'"
-      >
+      <button role="tab" :aria-selected="panelTab === 'saved'" :class="{ active: panelTab === 'saved' }"
+        @click="panelTab = 'saved'">
         已保存 <span>{{ savedConversations.length }}</span>
       </button>
     </nav>
@@ -294,45 +286,26 @@ async function run() {
       <p v-if="!savedConversations.length" class="field-help">
         尚无保存的对话。
       </p>
-      <article
-        v-for="conversation in savedConversations"
-        :key="conversation.id"
-        :class="{ current: conversation.id === store.conversationId }"
-      >
-        <button
-          class="saved-conversation-open"
-          @click="store.safe(() => openSaved(conversation.id))"
-        >
+      <article v-for="conversation in savedConversations" :key="conversation.id"
+        :class="{ current: conversation.id === store.conversationId }">
+        <button class="saved-conversation-open" @click="store.safe(() => openSaved(conversation.id))">
           <strong>{{ conversation.title }}</strong>
-          <small
-            >{{ toolNames[conversation.kind] }} ·
-            {{ new Date(conversation.createdAt).toLocaleString() }}</small
-          >
+          <small>{{ toolNames[conversation.kind] }} ·
+            {{ new Date(conversation.createdAt).toLocaleString() }}</small>
         </button>
         <div class="saved-conversation-actions">
-          <NButton
-            quaternary
-            circle
-            size="small"
-            title="重命名对话"
-            aria-label="重命名对话"
-            @click="beginRename(conversation.id, conversation.title)"
-            ><template #icon><PenLine :size="15" /></template
-          ></NButton>
-          <NPopconfirm
-            @positive-click="
-              store.safe(() => store.deleteConversationById(conversation.id))
-            "
-          >
+          <NButton quaternary circle size="small" title="重命名对话" aria-label="重命名对话"
+            @click="beginRename(conversation.id, conversation.title)"><template #icon>
+              <PenLine :size="15" />
+            </template></NButton>
+          <NPopconfirm @positive-click="
+            store.safe(() => store.deleteConversationById(conversation.id))
+            ">
             <template #trigger>
-              <NButton
-                quaternary
-                circle
-                size="small"
-                title="删除对话"
-                aria-label="删除对话"
-              >
-                <template #icon><Trash2 :size="15" /></template>
+              <NButton quaternary circle size="small" title="删除对话" aria-label="删除对话">
+                <template #icon>
+                  <Trash2 :size="15" />
+                </template>
               </NButton>
             </template>
             删除这条已保存对话？已生成的候选和已采用内容保留。
@@ -342,23 +315,14 @@ async function run() {
     </section>
     <div v-else class="workbench-pane">
       <label class="field-label">创作模型</label>
-      <TextModelSelect
-        v-model="store.taskModel"
-        :role="store.taskKind"
-        :disabled="store.busy"
-        @update:model-value="store.scratch"
-      />
+      <TextModelSelect v-model="store.taskModel" :role="store.taskKind" :disabled="store.busy"
+        @update:model-value="store.scratch" />
       <div class="tool-grid">
-        <button
-          v-for="g in availableGroups"
-          :key="g.id"
-          :class="{ active: selectedGroup?.id === g.id }"
-          :disabled="store.busy"
-          @click="store.safe(() => choose(g.id))"
-        >
+        <button v-for="g in availableGroups" :key="g.id" :class="{ active: selectedGroup?.id === g.id }"
+          :disabled="store.busy" @click="store.safe(() => choose(g.id))">
           <component :is="groupIcons[g.id]" :size="17" /><span>{{
             g.name
-          }}</span>
+            }}</span>
         </button>
       </div>
       <div class="tool-form">
@@ -369,10 +333,7 @@ async function run() {
         <p class="field-help" v-else-if="store.taskKind === 'blueprint'">
           自定义文章的特殊要求与故事约束，如视角限制、能力代价、感情线边界，供创作时持续参考。条目名称与内容均可自由定义。
         </p>
-        <p
-          class="field-help"
-          v-else-if="['opening', 'continue', 'expand'].includes(store.taskKind)"
-        >
+        <p class="field-help" v-else-if="['opening', 'continue', 'expand'].includes(store.taskKind)">
           {{ modeTools[mode].writing }}
           {{
             store.taskKind === "opening"
@@ -382,83 +343,45 @@ async function run() {
                 : "扩充当前章并生成完整替换稿，经审核后写入。"
           }}
         </p>
-        <NSelect
-          v-if="tools.length > 1"
-          :value="store.taskKind"
-          :options="tools.map((k) => ({ label: toolNames[k], value: k }))"
-          :disabled="store.busy"
-          @update:value="
+        <NSelect v-if="tools.length > 1" :value="store.taskKind"
+          :options="tools.map((k) => ({ label: toolNames[k], value: k }))" :disabled="store.busy" @update:value="
             (k) => store.safe(() => store.chooseTool(k as TaskKind))
-          "
-        />
-        <template
-          v-if="store.taskKind === 'blueprint' || store.taskKind === 'outline'"
-          ><template v-if="store.taskKind === 'outline'"
-            ><label class="field-label">规划层级</label
-            ><NSelect
-              v-model:value="planningTarget.level"
-              :disabled="store.busy"
-              :options="levels"
-              @update:value="
-                () =>
-                  (planningTarget = {
-                    level: planningTarget.level,
-                    count: 1,
-                  })
-              " /></template
-          ><label class="field-label">修改目标</label
-          ><NSelect
-            v-model:value="planningTarget.id"
-            :disabled="store.busy"
-            clearable
-            :options="targetNodes"
-            :placeholder="
-              store.taskKind === 'outline' ? '新建规划节点' : '新建额外设定条目'
-            "
-            @update:value="() => (planningTarget.count = 1)" /><template
-            v-if="!planningTarget.id"
-            ><template
-              v-if="['chapter', 'scene'].includes(planningTarget.level)"
-              ><label class="field-label">上级规划</label
-              ><NSelect
-                v-model:value="planningTarget.parentId"
-                :disabled="store.busy"
-                clearable
-                :options="parentNodes" /></template
-            ><template v-if="planningTarget.level === 'chapter'"
-              ><label class="field-label">关联章节（可选）</label
-              ><NSelect
-                v-model:value="planningTarget.chapterId"
-                :disabled="store.busy"
-                clearable
-                :options="
-                  store.detail!.chapters.map((c) => ({
-                    label: c.title,
-                    value: c.id,
-                  }))
-                " /></template
-            ><label class="field-label">生成数量</label
-            ><NInputNumber
-              v-model:value="planningTarget.count"
-              :disabled="store.busy"
-              :min="1"
-              :max="
-                planningTarget.chapterId || planningTarget.level === 'synopsis'
-                  ? 1
-                  : 30
-              " /></template
-        ></template>
-        <template v-if="store.taskKind === 'polish'"
-          ><label class="field-label">打磨方向</label
-          ><NSelect
-            v-model:value="store.polishAspect"
-            :disabled="store.busy"
-            :options="[
-              { label: '表达', value: 'expression' },
-              { label: '场景', value: 'scene' },
-              { label: '对白', value: 'dialogue' },
-            ]"
-          />
+          " />
+        <template v-if="store.taskKind === 'blueprint' || store.taskKind === 'outline'"><template
+            v-if="store.taskKind === 'outline'"><label class="field-label">规划层级</label>
+            <NSelect v-model:value="planningTarget.level" :disabled="store.busy" :options="levels" @update:value="
+              () =>
+              (planningTarget = {
+                level: planningTarget.level,
+                count: 1,
+              })
+            " />
+          </template><label class="field-label">修改目标</label>
+          <NSelect v-model:value="planningTarget.id" :disabled="store.busy" clearable :options="targetNodes"
+            :placeholder="store.taskKind === 'outline' ? '新建规划节点' : '新建额外设定条目'
+              " @update:value="() => (planningTarget.count = 1)" /><template v-if="!planningTarget.id"><template
+              v-if="['chapter', 'scene'].includes(planningTarget.level)"><label class="field-label">上级规划</label>
+              <NSelect v-model:value="planningTarget.parentId" :disabled="store.busy" clearable
+                :options="parentNodes" />
+            </template><template v-if="planningTarget.level === 'chapter'"><label class="field-label">关联章节（可选）</label>
+              <NSelect v-model:value="planningTarget.chapterId" :disabled="store.busy" clearable :options="store.detail!.chapters.map((c) => ({
+                label: c.title,
+                value: c.id,
+              }))
+                " />
+            </template><label class="field-label">生成数量</label>
+            <NInputNumber v-model:value="planningTarget.count" :disabled="store.busy" :min="1" :max="planningTarget.chapterId || planningTarget.level === 'synopsis'
+                ? 1
+                : 30
+              " />
+          </template>
+        </template>
+        <template v-if="store.taskKind === 'polish'"><label class="field-label">打磨方向</label>
+          <NSelect v-model:value="store.polishAspect" :disabled="store.busy" :options="[
+            { label: '表达', value: 'expression' },
+            { label: '场景', value: 'scene' },
+            { label: '对白', value: 'dialogue' },
+          ]" />
           <p class="field-help">
             完整参考当前章，仅替换原选区。{{
               store.selection
@@ -468,104 +391,62 @@ async function run() {
           </p>
           <blockquote v-if="store.selection" class="selection-preview">
             {{ store.selection.text }}
-          </blockquote></template
-        >
-        <template v-if="store.taskKind === 'check'"
-          ><label class="field-label">检查方向</label
-          ><NSelect
-            v-model:value="store.checkAspect"
-            :disabled="store.busy"
-            :options="[
-              { label: '连续性与设定', value: 'continuity' },
-              { label: '节奏', value: 'pacing' },
-              { label: '人物弧线', value: 'arc' },
-            ]"
-          /><NInput
-            v-if="store.checkAspect === 'arc'"
-            v-model:value="store.checkCharacter"
-            :disabled="store.busy"
-            placeholder="关注的人物（可选）"
-          /><label class="field-label">检查范围</label
-          ><NSelect
-            v-model:value="store.checkScope"
-            :disabled="store.busy"
-            :options="[
-              { label: '当前章', value: 'current' },
-              { label: '选定章节', value: 'chapters' },
-              { label: '全书', value: 'book' },
-            ]"
-          /><NSelect
-            v-if="store.checkScope === 'chapters'"
-            v-model:value="store.checkChapterIds"
-            :disabled="store.busy"
-            multiple
-            :options="
-              store.detail!.chapters.map((c) => ({
-                label: c.title,
-                value: c.id,
-              }))
-            "
-          />
+          </blockquote>
+        </template>
+        <template v-if="store.taskKind === 'check'"><label class="field-label">检查方向</label>
+          <NSelect v-model:value="store.checkAspect" :disabled="store.busy" :options="[
+            { label: '连续性与设定', value: 'continuity' },
+            { label: '节奏', value: 'pacing' },
+            { label: '人物弧线', value: 'arc' },
+          ]" />
+          <NInput v-if="store.checkAspect === 'arc'" v-model:value="store.checkCharacter" :disabled="store.busy"
+            placeholder="关注的人物（可选）" /><label class="field-label">检查范围</label>
+          <NSelect v-model:value="store.checkScope" :disabled="store.busy" :options="[
+            { label: '当前章', value: 'current' },
+            { label: '选定章节', value: 'chapters' },
+            { label: '全书', value: 'book' },
+          ]" />
+          <NSelect v-if="store.checkScope === 'chapters'" v-model:value="store.checkChapterIds" :disabled="store.busy"
+            multiple :options="store.detail!.chapters.map((c) => ({
+              label: c.title,
+              value: c.id,
+            }))
+              " />
           <p class="field-help">
             报告只供参考。本次 {{ checkCount }} 章，预计
             {{ checkCalls }}
             次模型调用。连续性和人物弧线含两两跨章对照，可缩小章节范围。
-          </p></template
-        >
+          </p>
+        </template>
         <div class="conversation-controls">
-          <label class="field-label" for="session-title"
-            >本次运行的会话标题</label
-          >
-          <NInput
-            id="session-title"
-            v-model:value="sessionTitle"
-            :maxlength="200"
-            :disabled="store.busy || !store.activeConversation"
-            :placeholder="
-              store.activeConversation
+          <label class="field-label" for="session-title">本次运行的会话标题</label>
+          <NInput id="session-title" v-model:value="sessionTitle" :maxlength="200"
+            :disabled="store.busy || !store.activeConversation" :placeholder="store.activeConversation
                 ? '输入会话标题'
                 : '生成第一轮后可编辑会话标题'
-            "
-            aria-label="本次运行的会话标题"
-            @keydown.enter.prevent="commitSessionTitle"
-            @blur="commitSessionTitle"
-          />
+              " aria-label="本次运行的会话标题" @keydown.enter.prevent="commitSessionTitle" @blur="commitSessionTitle" />
           <div class="conversation-actions">
-            <NButton
-              v-if="store.activeConversation && !store.activeConversation.saved"
-              class="conversation-action"
-              type="primary"
-              size="small"
-              :disabled="store.busy"
-              @click="store.safe(() => store.saveConversation())"
-              ><template #icon><Save :size="14" /></template>保存对话</NButton
-            >
-            <NButton
-              class="conversation-action"
-              secondary
-              size="small"
-              :disabled="store.busy"
-              @click="store.newConversation"
-              ><template #icon><Plus :size="14" /></template>新对话</NButton
-            ><NPopconfirm
-              v-if="store.activeConversation"
-              @positive-click="store.safe(store.deleteConversation)"
-            >
+            <NButton v-if="store.activeConversation && !store.activeConversation.saved" class="conversation-action"
+              type="primary" size="small" :disabled="store.busy" @click="store.safe(() => store.saveConversation())">
+              <template #icon>
+                <Save :size="14" />
+              </template>保存对话
+            </NButton>
+            <NButton class="conversation-action" secondary size="small" :disabled="store.busy"
+              @click="store.newConversation"><template #icon>
+                <Plus :size="14" />
+              </template>新对话</NButton>
+            <NPopconfirm v-if="store.activeConversation" @positive-click="store.safe(store.deleteConversation)">
               <template #trigger>
-                <NButton
-                  class="conversation-action"
-                  type="error"
-                  secondary
-                  size="small"
-                  :disabled="store.busy"
-                >
-                  <template #icon><Trash2 :size="14" /></template>
+                <NButton class="conversation-action" type="error" secondary size="small" :disabled="store.busy">
+                  <template #icon>
+                    <Trash2 :size="14" />
+                  </template>
                   删除对话
                 </NButton>
               </template>
               删除对话记录？已生成的候选和已采用内容保留。
             </NPopconfirm>
-            >
           </div>
         </div>
         <div v-if="store.taskKind === 'brainstorm'" class="chat-messages">
@@ -575,166 +456,93 @@ async function run() {
               t.result?.text || t.rawResponse
             }}</pre>
             <p v-if="t.error" class="review-error">{{ t.error }}</p>
-            <NButton
-              size="tiny"
-              :disabled="store.busy"
-              @click="store.safe(() => store.selectVersion(t.id))"
-              >{{
-                t.id === store.selectedTurnId ? "当前分支" : "从此处继续"
-              }}</NButton
-            >
+            <NButton size="tiny" :disabled="store.busy" @click="store.safe(() => store.selectVersion(t.id))">{{
+              t.id === store.selectedTurnId ? "当前分支" : "从此处继续"
+            }}</NButton>
           </article>
         </div>
-        <pre
-          v-if="store.taskKind === 'brainstorm' && store.busy"
-          class="generation-status"
-          aria-live="polite"
-        >
-正在生成，完成后显示结果。</pre>
+        <pre v-if="store.taskKind === 'brainstorm' && store.busy" class="generation-status" aria-live="polite">
+      正在生成，完成后显示结果。</pre>
         <label class="field-label">{{
           store.taskKind === "brainstorm" ? "聊点什么？" : "本次要求"
-        }}</label
-        ><NInput
-          v-model:value="store.instruction"
-          type="textarea"
-          :autosize="{ minRows: 3, maxRows: 10 }"
-          :disabled="store.busy"
-          :placeholder="
-            store.taskKind === 'brainstorm'
+          }}</label>
+        <NInput v-model:value="store.instruction" type="textarea" :autosize="{ minRows: 3, maxRows: 10 }"
+          :disabled="store.busy" :placeholder="store.taskKind === 'brainstorm'
               ? '聊聊人物、冲突、世界或故事可能性……'
               : store.taskKind === 'blueprint'
                 ? '描述希望新增或完善的特殊要求与约束，例如限制叙事视角、明确能力代价……'
                 : '描述本次希望完成的内容……'
-          "
-          @update:value="store.scratch"
-          @keydown.ctrl.enter="store.safe(run)"
-        />
+            " @update:value="store.scratch" @keydown.ctrl.enter="store.safe(run)" />
         <div class="workbench-actions">
-          <NButton
-            type="primary"
-            :loading="store.busy"
-            :disabled="store.imageBusy || store.directionsBusy || legacy"
-            @click="store.safe(run)"
-            >{{
+          <NButton type="primary" :loading="store.busy" :disabled="store.imageBusy || store.directionsBusy || legacy"
+            @click="store.safe(run)">{{
               store.taskKind === "brainstorm" ? "发送" : "生成结果"
-            }}</NButton
-          ><NButton v-if="store.busy" @click="store.stopTask">停止</NButton
-          ><NButton :disabled="store.busy" @click="store.safe(inspect)"
-            >查看实际参考</NButton
-          >
+            }}</NButton>
+          <NButton v-if="store.busy" @click="store.stopTask">停止</NButton>
+          <NButton :disabled="store.busy" @click="store.safe(inspect)">查看实际参考</NButton>
         </div>
-        <p
-          v-if="store.busy && store.taskKind !== 'brainstorm'"
-          class="generation-status"
-          role="status"
-        >
+        <p v-if="store.busy && store.taskKind !== 'brainstorm'" class="generation-status" role="status">
           正在生成，完成后显示结果。
         </p>
-        <NButton
-          v-if="store.selectedTurn?.sourceSnapshot.length"
-          text
-          size="tiny"
-          @click="inspectSaved"
-          >查看此结果生成时的来源快照</NButton
-        >
+        <NButton v-if="store.selectedTurn?.sourceSnapshot.length" text size="tiny" @click="inspectSaved">查看此结果生成时的来源快照
+        </NButton>
         <p v-if="store.taskError" role="alert" class="review-error">
           {{ store.taskError }}
         </p>
         <p v-if="legacy" class="field-help">
           旧版分层规划对话仅供查看，请在大纲规划中重新生成。
         </p>
-        <template v-if="store.taskKind !== 'brainstorm'"
-          ><div v-if="store.turns.length" class="result-versions">
-            <NSelect
-              :value="store.selectedTurnId"
-              :options="
-                store.turns.map((t) => ({
-                  label:
-                    '版本 ' + t.number + ' · ' + turnStatusLabels[t.status],
-                  value: t.id,
-                }))
-              "
-              :disabled="store.busy"
-              @update:value="(id) => store.safe(() => store.selectVersion(id))"
-            />
+        <template v-if="store.taskKind !== 'brainstorm'">
+          <div v-if="store.turns.length" class="result-versions">
+            <NSelect :value="store.selectedTurnId" :options="store.turns.map((t) => ({
+              label:
+                '版本 ' + t.number + ' · ' + turnStatusLabels[t.status],
+              value: t.id,
+            }))
+              " :disabled="store.busy" @update:value="(id) => store.safe(() => store.selectVersion(id))" />
           </div>
           <div v-if="store.output && !store.busy" class="result-reading">
             <pre class="tool-result">{{ resultText }}</pre>
-            <NButton
-              quaternary
-              circle
-              size="small"
-              title="放大查看结果"
-              aria-label="放大查看结果"
-              @click="resultOpen = true"
-              ><template #icon><Expand :size="16" /></template
-            ></NButton>
+            <NButton quaternary circle size="small" title="放大查看结果" aria-label="放大查看结果" @click="resultOpen = true">
+              <template #icon>
+                <Expand :size="16" />
+              </template></NButton>
           </div>
-          <NButton
-            v-if="
-              store.result?.type === 'changes' &&
-              store.selectedTurn?.status === 'complete'
-            "
-            type="primary"
-            :disabled="store.busy"
-            @click="store.reviewingChangeId = store.result.changeSetId"
-            >查看差异与审核</NButton
-          >
-          <NButton
-            v-if="
-              store.result?.type === 'illustration' &&
-              store.selectedTurn?.status === 'complete'
-            "
-            :disabled="store.busy"
-            @click="emit('illustration', store.result.text)"
-            >送入插画提示词</NButton
-          >
+          <NButton v-if="
+            store.result?.type === 'changes' &&
+            store.selectedTurn?.status === 'complete'
+          " type="primary" :disabled="store.busy" @click="store.reviewingChangeId = store.result.changeSetId">查看差异与审核
+          </NButton>
+          <NButton v-if="
+            store.result?.type === 'illustration' &&
+            store.selectedTurn?.status === 'complete'
+          " :disabled="store.busy" @click="emit('illustration', store.result.text)">送入插画提示词</NButton>
           <div v-if="store.result?.type === 'report'" class="report-findings">
-            <article
-              v-for="b in store.result.report.batches"
-              :key="b.chapterId"
-            >
-              <strong
-                >{{ b.title }} ·
-                {{ b.status === "complete" ? "完成" : "失败" }}</strong
-              ><NButton
-                text
-                size="small"
-                @click="store.safe(() => store.switchChapter(b.chapterId))"
-                >定位章节</NButton
-              >
+            <article v-for="b in store.result.report.batches" :key="b.chapterId">
+              <strong>{{ b.title }} ·
+                {{ b.status === "complete" ? "完成" : "失败" }}</strong>
+              <NButton text size="small" @click="store.safe(() => store.switchChapter(b.chapterId))">定位章节</NButton>
             </article>
           </div>
         </template>
       </div>
     </div>
-    <NModal v-model:show="renaming" preset="dialog" title="重命名对话"
-      ><NInput v-model:value="name" /><template #action
-        ><NButton
-          @click="
-            store.safe(async () => {
-              await store.renameConversation(name, renameId);
-              renaming = false;
-            })
-          "
-          >保存</NButton
-        ></template
-      ></NModal
-    >
-    <NModal
-      v-model:show="inspectOpen"
-      preset="card"
-      title="实际请求与参考资料"
-      :style="{ width: '980px', maxWidth: '94vw' }"
-      ><RequestPreview v-if="preview" :preview="preview"
-    /></NModal>
-    <NModal
-      v-model:show="resultOpen"
-      preset="card"
-      title="生成结果"
+    <NModal v-model:show="renaming" preset="dialog" title="重命名对话">
+      <NInput v-model:value="name" /><template #action>
+        <NButton @click="
+          store.safe(async () => {
+            await store.renameConversation(name, renameId);
+            renaming = false;
+          })
+          ">保存</NButton>
+      </template>
+    </NModal>
+    <NModal v-model:show="inspectOpen" preset="card" title="实际请求与参考资料" :style="{ width: '980px', maxWidth: '94vw' }">
+      <RequestPreview v-if="preview" :preview="preview" />
+    </NModal>
+    <NModal v-model:show="resultOpen" preset="card" title="生成结果"
       :style="{ width: 'min(1100px, 94vw)', maxHeight: '90vh' }"
-      :content-style="{ overflow: 'auto', maxHeight: 'calc(90vh - 100px)' }"
-    >
+      :content-style="{ overflow: 'auto', maxHeight: 'calc(90vh - 100px)' }">
       <pre class="expanded-result">{{ expandedResultText }}</pre>
     </NModal>
   </aside>
@@ -750,10 +558,12 @@ async function run() {
   height: 100%;
   box-sizing: border-box;
 }
+
 .studio-workbench header h2 {
   font-size: 19px;
   margin: 0;
 }
+
 .studio-workbench header span {
   display: block;
   color: var(--muted);
@@ -761,6 +571,7 @@ async function run() {
   margin-top: 6px;
   overflow-wrap: anywhere;
 }
+
 .workbench-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -770,6 +581,7 @@ async function run() {
   border-radius: 8px;
   background: var(--surface-muted);
 }
+
 .workbench-tabs button {
   min-width: 0;
   border: 1px solid transparent;
@@ -779,21 +591,25 @@ async function run() {
   background: transparent;
   cursor: pointer;
 }
+
 .workbench-tabs button.active {
   color: var(--primary);
   background: var(--surface);
   border-color: var(--border);
   box-shadow: 0 1px 2px rgb(24 36 30 / 8%);
 }
+
 .workbench-tabs button:focus-visible,
 .saved-conversation-open:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
+
 .saved-conversations h3 {
   margin: 8px 0 16px;
   font-size: 16px;
 }
+
 .saved-conversations article {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -806,13 +622,16 @@ async function run() {
   border-radius: 7px;
   background: var(--surface);
 }
+
 .saved-conversations article:hover {
   background: var(--surface-muted);
 }
+
 .saved-conversations article.current {
   border-left-color: var(--primary);
   background: var(--accent-soft);
 }
+
 .saved-conversation-open {
   min-width: 0;
   padding: 4px 0;
@@ -822,27 +641,32 @@ async function run() {
   text-align: left;
   cursor: pointer;
 }
+
 .saved-conversation-open strong,
 .saved-conversation-open small {
   display: block;
   overflow-wrap: anywhere;
 }
+
 .saved-conversation-open small {
   margin-top: 5px;
   color: var(--muted);
   font-size: 11px;
 }
+
 .saved-conversation-actions {
   display: flex;
   align-items: center;
   gap: 2px;
 }
+
 .tool-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 7px;
   margin: 20px 0;
 }
+
 .tool-grid button {
   border: 1px solid var(--border);
   background: transparent;
@@ -851,23 +675,28 @@ async function run() {
   cursor: pointer;
   color: inherit;
 }
+
 .tool-grid button.active {
   border-color: var(--primary);
   background: var(--accent-soft);
   color: var(--primary);
 }
+
 .tool-form h3 {
   margin: 10px 0;
 }
+
 .tool-form .n-select,
 .tool-form .n-input-number {
   margin-bottom: 7px;
 }
+
 .conversation-controls {
   border-top: 1px solid var(--border);
   padding-top: 15px;
   margin-top: 18px;
 }
+
 .tool-result,
 .chat-assistant,
 .preview-text {
@@ -876,24 +705,29 @@ async function run() {
   font: inherit;
   line-height: 1.8;
 }
+
 .tool-result {
   max-height: 340px;
   overflow: auto;
 }
+
 .generation-status {
   margin: 12px 0;
   color: var(--muted);
   font: inherit;
 }
+
 .result-reading {
   display: flex;
   align-items: flex-start;
   gap: 8px;
 }
+
 .result-reading .tool-result {
   min-width: 0;
   flex: 1;
 }
+
 .expanded-result {
   margin: 0;
   white-space: pre-wrap;
@@ -901,24 +735,29 @@ async function run() {
   font: inherit;
   line-height: 1.85;
 }
+
 .chat-messages {
   max-height: 450px;
   overflow: auto;
   margin-top: 15px;
 }
+
 .chat-messages article {
   border-bottom: 1px solid var(--border);
   padding-bottom: 15px;
   margin-bottom: 15px;
 }
+
 .chat-user {
   background: var(--accent-soft);
   padding: 12px;
   border-radius: 8px;
 }
+
 .chat-assistant {
   margin: 13px 0;
 }
+
 .selection-preview {
   max-height: 100px;
   overflow: auto;
@@ -926,26 +765,32 @@ async function run() {
   padding: 10px;
   background: var(--surface-muted);
 }
+
 .review-error {
   color: var(--danger);
   white-space: pre-wrap;
 }
+
 .result-versions {
   margin-top: 20px;
 }
+
 .reference-preview {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
 }
+
 .reference-preview img {
   width: 150px;
   height: 150px;
   object-fit: contain;
 }
+
 .reference-preview figure {
   margin: 10px 0;
 }
+
 .report-findings article {
   display: flex;
   gap: 12px;
@@ -958,41 +803,50 @@ async function run() {
   border-color: var(--border);
   background: var(--surface);
 }
+
 .tool-grid button,
 .conversation-controls {
   border-color: var(--border);
 }
+
 .tool-grid button.active {
   background: var(--accent-soft);
   border-color: var(--primary);
   color: var(--primary);
 }
+
 .chat-user,
 .selection-preview {
   background: var(--surface-muted);
 }
+
 .studio-workbench header span {
   color: var(--muted);
 }
-.tool-form > .field-help {
+
+.tool-form>.field-help {
   line-height: 1.8;
 }
+
 .workbench-actions {
   display: flex;
   gap: 7px;
   flex-wrap: wrap;
   margin-top: 12px;
 }
+
 .conversation-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 11px;
 }
+
 .conversation-actions .conversation-action {
   min-height: 34px;
   border-radius: 7px;
 }
+
 .conversation-actions .conversation-action:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
@@ -1005,6 +859,7 @@ async function run() {
   background: var(--surface);
   border-left: 1px solid var(--border);
 }
+
 .studio-workbench header {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -1014,6 +869,7 @@ async function run() {
   margin-bottom: 14px;
   border-bottom: 1px solid var(--border);
 }
+
 .workbench-mark {
   grid-row: span 2;
   width: 34px;
@@ -1026,19 +882,23 @@ async function run() {
   background: var(--gold-soft);
   border: 1px solid color-mix(in srgb, var(--gold) 35%, transparent);
 }
+
 .studio-workbench header h2 {
   font-family: var(--serif);
   font-size: 1.214286rem;
   letter-spacing: 1px;
 }
+
 .studio-workbench header span:not(.workbench-mark) {
   margin-top: 2px;
 }
+
 .tool-grid {
   grid-template-columns: repeat(4, 1fr);
   gap: 6px;
   margin: 16px 0 18px;
 }
+
 .tool-grid button {
   display: flex;
   flex-direction: column;
@@ -1058,59 +918,71 @@ async function run() {
     border-color 0.15s,
     transform 0.15s;
 }
+
 .tool-grid button svg {
   color: var(--muted);
   transition: color 0.15s;
 }
+
 .tool-grid button:hover:not(:disabled) {
   background: var(--hover-color);
   color: var(--ink);
   transform: translateY(-1px);
 }
+
 .tool-grid button.active {
   background: var(--accent-soft);
   border-color: var(--accent-line);
   color: var(--primary);
   font-weight: 600;
 }
+
 .tool-grid button.active svg {
   color: var(--primary);
 }
+
 .tool-form {
   padding: 16px;
   border-radius: 14px;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface-muted) 55%, var(--surface));
 }
+
 .tool-form h3 {
   margin: 0 0 6px;
   font-family: var(--serif);
   font-size: 1.071429rem;
   letter-spacing: 0.5px;
 }
+
 .conversation-controls {
   border-top-style: dashed;
 }
+
 .chat-user {
   margin-left: 24px;
   border-radius: 14px 14px 4px 14px;
   background: var(--accent-soft);
   color: var(--ink);
 }
+
 .chat-assistant {
   padding: 12px 14px;
   border-radius: 14px 14px 14px 4px;
   background: var(--surface);
   border: 1px solid var(--border);
 }
+
 .chat-messages article {
   border-bottom: 0;
 }
+
 .selection-preview {
   border-left: 3px solid var(--gold);
   border-radius: 0 8px 8px 0;
   font-family: var(--serif);
 }
+
 @media (max-width: 1250px) {
   .studio-workbench {
     width: 330px;
